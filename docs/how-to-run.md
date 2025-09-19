@@ -20,14 +20,20 @@ cd selector-service && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Run selector (dry-run)
 
+Recommended simple dry-run (auto-detects base/head):
+
 ```bash
-bash tools/run_selector.sh --project-root . --base origin/main --head HEAD --dry-run
+bash tools/run_selector.sh --project-root . --dry-run
 ```
+
+Notes:
+- If `origin/main` is missing, the scripts fall back to the empty tree so first-commit diffs work.
+- On Windows, if `python` isn't on PATH, either activate your virtualenv (so `python.exe` is available) or install Python 3; the scripts also try `py -3`.
 
 ## Run selector (execute tests)
 
 ```bash
-bash tools/run_selector.sh --project-root . --base origin/main --head HEAD
+bash tools/run_selector.sh --project-root .
 ```
 
 Environment variables:

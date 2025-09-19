@@ -1,5 +1,8 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple, Set, Any
+import logging
+
+logger = logging.getLogger("selector.core")
 
 
 def build_reachability(changed_files: List[Dict[str, Any]],
@@ -63,7 +66,15 @@ def select_tests(changed_files: List[Dict[str, Any]],
                  jdeps_graph: Dict[str, List[str]],
                  test_mapping: List[Dict[str, Any]],
                  max_tests: int = 500) -> Tuple[List[str], Dict[str,str], float, Dict[str, Any]]:
+    logger.debug(
+        "select_tests: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, test_mapping=%d, max_tests=%d",
+        len(changed_files), len(call_graph), len(jdeps_graph), len(test_mapping), max_tests,
+    )
     reached_methods, reason_edges = build_reachability(changed_files, call_graph, jdeps_graph)
+    logger.debug(
+        "reachability: reached_methods=%d, reason_edges=%d",
+        len(reached_methods), len(reason_edges),
+    )
 
     selected: List[str] = []
     explanations: Dict[str,str] = {}
@@ -71,12 +82,17 @@ def select_tests(changed_files: List[Dict[str, Any]],
     # Match tests whose covers intersect reached methods or changed classes
     changed_paths = [c['path'] for c in changed_files]
 
+    selected_by_reachability = 0
     for tm in test_mapping:
         test = tm.get('test')
         covers = set(tm.get('covers', []))
         if covers & reached_methods:
             selected.append(test)
             explanations[test] = 'Selected via call-graph reachability to covered methods.'
+            selected_by_reachability += 1
+
+    if selected_by_reachability:
+        logger.info("selection: %d tests selected via reachability", selected_by_reachability)
 
     # Fallback: if nothing selected, choose tests in same package as changed classes
     if not selected:
@@ -90,6 +106,7 @@ def select_tests(changed_files: List[Dict[str, Any]],
                     changed_pkgs.add(pkg)
                 except Exception:
                     pass
+        logger.debug("fallback: no tests via reachability; changed_pkgs=%s", sorted(changed_pkgs))
         for tm in test_mapping:
             test = tm.get('test')
             test_pkg = '.'.join(test.split('#')[0].split('.')[:-1])
@@ -98,6 +115,10 @@ def select_tests(changed_files: List[Dict[str, Any]],
                 explanations[test] = 'Selected via package heuristic fallback.'
                 if len(selected) >= max_tests:
                     break
+        if selected:
+            logger.info("fallback: %d tests selected via package heuristic", len(selected))
+        else:
+            logger.warn("fallback: no tests selected; returning empty selection")
 
     selected = selected[:max_tests]
 
@@ -107,10 +128,19 @@ def select_tests(changed_files: List[Dict[str, Any]],
     size_factor = max(0.3, min(1.0, 50.0 / num_changed_lines))
     coverage_factor = min(1.0, len(selected) / max(1, len(test_mapping)))
     confidence = round(min(1.0, 0.5*distance_factor + 0.3*size_factor + 0.2*coverage_factor), 2)
+    logger.debug(
+        "confidence: num_changed_lines=%d, distance_factor=%.2f, size_factor=%.2f, coverage_factor=%.2f, final=%.2f",
+        num_changed_lines, distance_factor, size_factor, coverage_factor, confidence,
+    )
 
     metadata = {
         'reason_edges': [{'from': a, 'to': b} for a,b in reason_edges[:200]],
         'changed_files': changed_paths,
     }
 
+    if selected:
+        logger.info("select_tests: returning %d tests, confidence=%.2f", len(selected), confidence)
+        logger.debug("selected sample: %s", selected[:10])
+    else:
+        logger.info("select_tests: returning empty selection, confidence=%.2f", confidence)
     return selected, explanations, confidence, metadata

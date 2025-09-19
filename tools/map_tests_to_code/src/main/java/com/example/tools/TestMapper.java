@@ -1,9 +1,19 @@
 package com.example.tools;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
-import java.util.regex.*;
+import java.io.IOException;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Heuristic mapper from JUnit test methods to covered classes/methods.
@@ -26,13 +36,15 @@ public class TestMapper {
         } catch (IOException e) {
             // ignore
         }
+        System.out.println("[INFO] TestMapper: root=" + root);
+        System.out.println("[INFO] TestMapper: discovered test files=" + testFiles.size());
 
         Pattern pkgPattern = Pattern.compile("^package\\s+([a-zA-Z0-9_.]+);", Pattern.MULTILINE);
         Pattern clsPattern = Pattern.compile("class\\s+([A-Za-z0-9_]+)");
         Pattern testMethodPattern = Pattern.compile("@Test[\\s\\S]*?\\n\\s*public\\s+void\\s+([A-Za-z0-9_]+)\\s*\\(");
-        Pattern callPattern = Pattern.compile("([A-Za-z0-9_$.]+)#?([a-zA-Z0-9_]+)\\s*\\("); // for explanations
         Pattern dotCallPattern = Pattern.compile("([A-Za-z0-9_$.]+)\\.([a-zA-Z0-9_]+)\\s*\\(");
 
+        int methodCount = 0;
         for (Path tf : testFiles) {
             String src = Files.readString(tf);
             String pkg = findFirst(pkgPattern, src, 1).orElse("");
@@ -56,15 +68,18 @@ public class TestMapper {
                 entry.put("test", fqTestClass + "#" + testMethod);
                 entry.put("covers", new ArrayList<>(covers));
                 mapping.add(entry);
+                methodCount++;
             }
         }
+        System.out.println("[INFO] TestMapper: parsed test methods=" + methodCount);
+        System.out.println("[INFO] TestMapper: mapping entries=" + mapping.size());
 
         Path out = root.resolve("tools/output/test_mapping.json");
         Files.createDirectories(out.getParent());
         try (Writer w = Files.newBufferedWriter(out)) {
             w.write(toJson(mapping));
         }
-        System.out.println("Wrote " + out);
+        System.out.println("[INFO] TestMapper: wrote mapping to " + out);
     }
 
     private static Optional<String> findFirst(Pattern p, String s, int group) {
