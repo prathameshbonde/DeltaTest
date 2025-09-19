@@ -1,0 +1,2 @@
+rootProject.name = 'example-monorepo'
+include 'libs:service-a', 'libs:service-b', 'tools:map_tests_to_code'

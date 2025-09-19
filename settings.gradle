@@ -1,0 +1,9 @@
+rootProject.name = 'delta-selective-tests'
+
+include(':libs:service-a')
+include(':libs:service-b')
+include(':tools:map_tests_to_code')
+
+project(':libs:service-a').projectDir = file('example-monorepo/libs/service-a')
+project(':libs:service-b').projectDir = file('example-monorepo/libs/service-b')
+project(':tools:map_tests_to_code').projectDir = file('tools/map_tests_to_code')

@@ -1,0 +1,16 @@
+plugins {
+    id 'java'
+}
+
+allprojects {
+    repositories { mavenCentral() }
+}
+
+subprojects {
+    apply plugin: 'java'
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    test {
+        useJUnitPlatform()
+    }
+}

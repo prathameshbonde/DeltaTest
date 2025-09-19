@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.example.tools'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+tasks.register('mapTestsToCode', JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.example.tools.TestMapper'
+    // Pass project root if needed
+    args project.rootDir.absolutePath
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}

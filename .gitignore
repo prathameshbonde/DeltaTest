@@ -1,0 +1,12 @@
+/.gradle/
+/build/
+**/build/
+__pycache__/
+.pytest_cache/
+*.pyc
+tools/output/
+selector_output.json
+.DS_Store
+*.iml
+.idea/
+/.vscode/
