@@ -358,30 +358,146 @@ else
   exit 1
 fi
 
-# Build Gradle --tests arguments
-debug "Building Gradle test args from selector output"
+# Build Gradle task-qualified --tests arguments
+debug "Building Gradle test args from selector output (module-qualified)"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
   $PY - << 'PY'
-import json, os
+import json, os, re
+from pathlib import Path
+
+ROOT = Path(os.environ.get('PROJECT_ROOT') or '.')
+
+def nearest_gradle_module_dir(file_path: Path) -> Path | None:
+  cur = file_path.parent
+  while True:
+    if (cur / 'build.gradle').exists() or (cur / 'build.gradle.kts').exists():
+      return cur
+    if cur == cur.parent:
+      return None
+    cur = cur.parent
+
+def gradle_task_for_module(module_dir: Path) -> str:
+  rel = os.path.relpath(module_dir, ROOT)
+  if rel == '.' or rel == '' or rel.startswith('..'):
+    return 'test'
+  # Convert path segments to gradle path (e.g., services/foo -> :services:foo:test)
+  segs = [s for s in rel.replace('\\', '/').split('/') if s and s != '.']
+  return ':' + ':'.join(segs) + ':test'
+
+def find_source_for_class(fqc: str) -> Path | None:
+  # Support inner classes by using the top-level class for file name
+  top = fqc.split('$', 1)[0]
+  pkg, cls = (top.rsplit('.', 1) + [''])[:2]
+  if not cls:
+    return None
+  pkg_path = pkg.replace('.', '/') if pkg else ''
+  patterns = []
+  if pkg_path:
+    patterns.append(f"**/src/test/java/{pkg_path}/{cls}.java")
+  else:
+    patterns.append(f"**/src/test/java/{cls}.java")
+  # Fallback: search anywhere under src/test/java for the class file
+  patterns.append(f"**/src/test/java/**/{cls}.java")
+  for pat in patterns:
+    for p in ROOT.glob(pat):
+      try:
+        txt = p.read_text(encoding='utf-8', errors='ignore')
+      except Exception:
+        continue
+      # Verify package matches when known
+      m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', txt, re.MULTILINE)
+      file_pkg = m.group(1) if m else ''
+      if pkg and file_pkg != pkg:
+        continue
+      return p
+  return None
+
 sel = json.load(open('selector_output.json'))
 selected = sel.get('selected_tests', [])
-args = []
+
+lines: list[str] = []
 for t in selected:
-    cls, meth = t.split('#',1)
-    args.append(f"--tests {cls}.{meth}\n")
-open('tools/output/gradle_args.txt','w').write(' '.join(args))
+  try:
+    cls, meth = t.split('#', 1)
+  except ValueError:
+    # Skip invalid entries
+    continue
+  src = find_source_for_class(cls)
+  task = 'test'
+  if src is not None:
+    mod_dir = nearest_gradle_module_dir(src)
+    if mod_dir is not None:
+      task = gradle_task_for_module(mod_dir)
+  lines.append(f"{task} --tests {cls}.{meth}")
+
+out_path = Path('tools/output/gradle_args.txt')
+out_path.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
 print('Wrote tools/output/gradle_args.txt')
 PY
 elif [[ "$PY" == "py -3" ]]; then
   py -3 - << 'PY'
-import json, os
+import json, os, re
+from pathlib import Path
+
+ROOT = Path(os.environ.get('PROJECT_ROOT') or '.')
+
+def nearest_gradle_module_dir(file_path: Path):
+  cur = file_path.parent
+  while True:
+    if (cur / 'build.gradle').exists() or (cur / 'build.gradle.kts').exists():
+      return cur
+    if cur == cur.parent:
+      return None
+    cur = cur.parent
+
+def gradle_task_for_module(module_dir: Path) -> str:
+  rel = os.path.relpath(module_dir, ROOT)
+  if rel == '.' or rel == '' or rel.startswith('..'):
+    return 'test'
+  segs = [s for s in rel.replace('\\\\', '/').split('/') if s and s != '.']
+  return ':' + ':'.join(segs) + ':test'
+
+def find_source_for_class(fqc: str):
+  top = fqc.split('$', 1)[0]
+  parts = top.rsplit('.', 1)
+  pkg = parts[0] if len(parts) == 2 else ''
+  cls = parts[1] if len(parts) == 2 else parts[0]
+  pkg_path = pkg.replace('.', '/') if pkg else ''
+  patterns = []
+  if pkg_path:
+    patterns.append(f"**/src/test/java/{pkg_path}/{cls}.java")
+  else:
+    patterns.append(f"**/src/test/java/{cls}.java")
+  patterns.append(f"**/src/test/java/**/{cls}.java")
+  for pat in patterns:
+    for p in ROOT.glob(pat):
+      try:
+        txt = p.read_text(encoding='utf-8', errors='ignore')
+      except Exception:
+        continue
+      m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', txt, re.MULTILINE)
+      file_pkg = m.group(1) if m else ''
+      if pkg and file_pkg != pkg:
+        continue
+      return p
+  return None
+
 sel = json.load(open('selector_output.json'))
 selected = sel.get('selected_tests', [])
-args = []
+lines = []
 for t in selected:
-    cls, meth = t.split('#',1)
-    args.append(f"--tests {cls}.{meth}\n")
-open('tools/output/gradle_args.txt','w').write(' '.join(args))
+  if '#' not in t:
+    continue
+  cls, meth = t.split('#', 1)
+  src = find_source_for_class(cls)
+  task = 'test'
+  if src is not None:
+    mod_dir = nearest_gradle_module_dir(src)
+    if mod_dir is not None:
+      task = gradle_task_for_module(mod_dir)
+  lines.append(f"{task} --tests {cls}.{meth}")
+
+Path('tools/output/gradle_args.txt').write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
 print('Wrote tools/output/gradle_args.txt')
 PY
 else

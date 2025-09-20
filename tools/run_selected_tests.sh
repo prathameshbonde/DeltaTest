@@ -17,18 +17,44 @@ if [[ ! -f "$ARGS_FILE" ]]; then
   fi
 fi
 
-declare -a TESTS
+declare -A TASK_TO_TESTS
+total_tests=0
+
+# Parse ARGS_FILE supporting two formats per line:
+# 1) "--tests Class.method" (uses default GRADLE_TASK)
+# 2) ":module:task --tests Class.method" (explicit task per line)
 while IFS= read -r line || [[ -n "$line" ]]; do
   line="$(echo "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ -z "$line" ]] && continue
-  if [[ "$line" == --tests* ]]; then
+
+  # First token determines if it's an explicit task or just --tests
+  first_token="${line%% *}"
+  if [[ "$first_token" == "--tests" ]]; then
+    # Old format: only tests provided; use default GRADLE_TASK
     test_name="${line#--tests }"
     [[ -z "$test_name" || "$test_name" == "--tests" ]] && continue
-    TESTS+=("$test_name")
+    task_key="$GRADLE_TASK"
+  else
+    # New format: <task> --tests <pattern>
+    task_key="$first_token"
+    if [[ "$line" != *" --tests "* ]]; then
+      # Not a tests line; skip
+      continue
+    fi
+    test_name="${line#* --tests }"
+    [[ -z "$test_name" ]] && continue
   fi
+
+  current="${TASK_TO_TESTS["$task_key"]-}"
+  if [[ -z "$current" ]]; then
+    TASK_TO_TESTS["$task_key"]="$test_name"
+  else
+    TASK_TO_TESTS["$task_key"]+=$'\x1f'"$test_name"
+  fi
+  total_tests=$((total_tests+1))
 done < "$ARGS_FILE"
 
-if [[ "${#TESTS[@]}" -eq 0 ]]; then
+if [[ "$total_tests" -eq 0 ]]; then
   echo "[selector] No test entries found in $ARGS_FILE."
   if [[ "${FALLBACK_FULL_SUITE:-0}" == "1" ]]; then
     echo "[selector] Fallback enabled -> running full test suite."
@@ -39,51 +65,52 @@ if [[ "${#TESTS[@]}" -eq 0 ]]; then
   fi
 fi
 
-echo "[selector] Found ${#TESTS[@]} selected tests."
-echo "[selector] Gradle task: $GRADLE_TASK"
+echo "[selector] Found $total_tests selected test(s) across ${#TASK_TO_TESTS[@]} task group(s)."
+echo "[selector] Default Gradle task (for legacy lines): $GRADLE_TASK"
 echo "[selector] Chunk size:  $CHUNK_SIZE"
 
 if [[ -f "./gradlew" ]]; then
   chmod +x ./gradlew || true
 fi
 
-total="${#TESTS[@]}"
-start=0
-chunk_index=1
 failures=0
 
-while [[ $start -lt $total ]]; do
-  end=$(( start + CHUNK_SIZE ))
-  [[ $end -gt $total ]] && end=$total
-  echo "[selector] Running chunk $chunk_index: tests $((start+1))..$end"
+# Iterate over each task group and run tests in chunks
+for task in "${!TASK_TO_TESTS[@]}"; do
+  IFS=$'\x1f' read -r -a TESTS <<< "${TASK_TO_TESTS[$task]}"
+  total="${#TESTS[@]}"
+  echo "[selector] Task '$task' has $total test(s)."
 
-  declare -a GRADLE_ARGS
-  for (( i=start; i<end; i++ )); do
-    GRADLE_ARGS+=( "--tests" "${TESTS[i]}" )
+  start=0
+  chunk_index=1
+  while [[ $start -lt $total ]]; do
+    end=$(( start + CHUNK_SIZE ))
+    [[ $end -gt $total ]] && end=$total
+    echo "[selector] Running chunk $chunk_index for task '$task': tests $((start+1))..$end"
+
+    declare -a GRADLE_ARGS
+    for (( i=start; i<end; i++ )); do
+      GRADLE_ARGS+=( "--tests" "${TESTS[i]}" )
+    done
+
+    # Pretty-print command with single quotes (for logs)
+    pretty_cmd="$GRADLE_CMD $task"
+    for (( i=0; i<${#GRADLE_ARGS[@]}; i+=2 )); do
+      pattern="${GRADLE_ARGS[i+1]}"
+      pretty_cmd+=" ${GRADLE_ARGS[i]} '${pattern}'"
+    done
+    [[ -n "${GRADLE_FLAGS:-}" ]] && pretty_cmd+=" ${GRADLE_FLAGS}"
+    echo "[selector] > $pretty_cmd"
+
+    # Safe execution (array preserves literals; $ not expanded)
+    if ! "$GRADLE_CMD" "$task" "${GRADLE_ARGS[@]}" ${GRADLE_FLAGS:-}; then
+      echo "[selector] Chunk $chunk_index failed for task '$task'."
+      failures=$((failures+1))
+    fi
+
+    start=$end
+    chunk_index=$((chunk_index+1))
   done
-
-  # Pretty-print command with single quotes (for logs)
-  pretty_cmd="$GRADLE_CMD $GRADLE_TASK"
-  for (( i=0; i<${#GRADLE_ARGS[@]}; i+=2 )); do
-    # GRADLE_ARGS[i] is --tests; GRADLE_ARGS[i+1] is the pattern
-    pattern="${GRADLE_ARGS[i+1]}"
-    pretty_cmd+=" ${GRADLE_ARGS[i]} '${pattern}'"
-  done
-  [[ -n "${GRADLE_FLAGS:-}" ]] && pretty_cmd+=" ${GRADLE_FLAGS}"
-  echo "[selector] > $pretty_cmd"
-
-  # Safe execution (array preserves literals; $ not expanded)
-  if ! "$GRADLE_CMD" "$GRADLE_TASK" "${GRADLE_ARGS[@]}" ${GRADLE_FLAGS:-}; then
-    echo "[selector] Chunk $chunk_index failed."
-    failures=$((failures+1))
-  fi
-
-  # If you truly need to force single quotes to reach Gradle (normally unnecessary),
-  # uncomment below (less safe due to eval):
-  # eval "$pretty_cmd"
-
-  start=$end
-  chunk_index=$((chunk_index+1))
 done
 
 if [[ $failures -gt 0 ]]; then
