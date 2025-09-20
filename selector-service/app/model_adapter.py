@@ -106,6 +106,7 @@ class ExternalLLMAdapter:
             "You are an expert build/CI assistant that selects the minimal yet sufficient set of JUnit tests "
             "to run for a given code change in a large Java Gradle monorepo. "
             "Use only the provided structured inputs (changed files with hunks and dependency graphs). "
+            "You will be given both a brief summary and the FULL JSON for changed_files, jdeps_graph, and call_graph. "
             "Favor precision and recall trade-offs that keep runtime low while maintaining correctness. "
             "Always respond with a strict JSON object matching this schema: "
             "{\n  \"selected_tests\": string[],\n  \"explanations\": { [test: string]: string },\n  \"confidence\": number,\n  \"metadata\": object\n}. "
@@ -121,16 +122,24 @@ class ExternalLLMAdapter:
         settings = payload.get('settings', {})
         max_tests = settings.get('max_tests', 500)
 
-        # Summaries with caps to keep prompt small
+        # Summaries with caps to keep prompt readable; full JSON is attached below
         changed = payload.get('changed_files', [])
         jdeps = payload.get('jdeps_graph', {})
         call_graph = payload.get('call_graph', [])
+        allowed_tests = payload.get('allowed_tests', [])
 
         def summarize_changed(max_items=100) -> str:
             parts = []
             for i, cf in enumerate(changed[:max_items]):
                 hunks = cf.get('hunks', [])
-                parts.append(f"- {cf.get('path','?')} ({cf.get('change_type','M')}), hunks={[(h.get('start'), h.get('end')) for h in hunks][:5]}")
+                tm = cf.get('touched_methods') or []
+                tm_s = ", ".join((m.get('fqn') or m.get('name') or '?') + (f"[{m.get('start_line')}-{m.get('end_line')}]" if m.get('start_line') and m.get('end_line') else '') for m in tm[:5])
+                java_ctx = ''
+                if cf.get('lang') == 'java':
+                    java_ctx = f" class={cf.get('fully_qualified_class') or cf.get('class_name')}"
+                    if tm_s:
+                        java_ctx += f" touched=[{tm_s}]"
+                parts.append(f"- {cf.get('path','?')} ({cf.get('change_type','M')}){java_ctx}, hunks={[(h.get('start'), h.get('end')) for h in hunks][:5]}")
             more = max(0, len(changed) - max_items)
             if more:
                 parts.append(f"... and {more} more files")
@@ -160,13 +169,25 @@ class ExternalLLMAdapter:
             "If there is no signal, return an empty list with a lower confidence and explain why."
         ).format(max_tests=max_tests)
 
+        # Attach full inputs as compact JSON for the model to consume
+        full_inputs = {
+            'changed_files': changed,
+            'jdeps_graph': jdeps,
+            'call_graph': call_graph,
+            'allowed_tests': allowed_tests,
+        }
+        full_inputs_json = json.dumps(full_inputs, ensure_ascii=False, separators=(",", ":"))
+
         return (
             f"Repository: {name}\n"
             f"Base: {base}\nHead: {head}\n\n"
-            f"Changed files:\n{summarize_changed()}\n\n"
-            f"Graphs summary:\n{summarize_graphs()}\n\n"
+            f"Changed files (summary):\n{summarize_changed()}\n\n"
+            f"Graphs (summary):\n{summarize_graphs()}\n\n"
             f"{instructions}\n\n"
-            "Return strictly JSON with keys: selected_tests, explanations, confidence, metadata."
+            "Full inputs (JSON) — changed_files, jdeps_graph, call_graph:\n"
+            "```json\n" + full_inputs_json + "\n```\n\n"
+            "Additionally, you will be provided an allowed_tests array in the payload. You must ONLY return tests from allowed_tests. Do not invent or hallucinate tests; if unsure, return an empty list with a clear explanation."
+            " Return strictly JSON with keys: selected_tests, explanations, confidence, metadata."
         )
 
     # ----- response helpers -----
@@ -208,108 +229,6 @@ class ExternalLLMAdapter:
             return text[start:end+1]
         return ''
 
-
-class AzureOpenAIAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        # Azure settings
-        self.resource = os.environ.get('AZURE_OPENAI_ENDPOINT', '').rstrip('/')  # e.g., https://myres.openai.azure.com
-        self.deployment = os.environ.get('AZURE_OPENAI_DEPLOYMENT', '')
-        self.api_version = os.environ.get('AZURE_OPENAI_API_VERSION', '2024-02-15-preview')
-        self.api_key = os.environ.get('AZURE_OPENAI_API_KEY', '')
-        self.model = self.deployment or os.environ.get('LLM_MODEL', 'gpt-4o-mini')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE', '0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS', '800'))
-
-    def select(self, payload: Dict[str, Any]):
-        if not self.resource or not self.deployment or not self.api_key:
-            raise RuntimeError('AzureOpenAIAdapter not configured: set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_KEY')
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        url = f"{self.resource}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
-        body = {
-            'messages': [
-                {'role':'system','content':sys_prompt},
-                {'role':'user','content':user_prompt},
-            ],
-            'temperature': self.temperature,
-            'max_tokens': self.max_tokens,
-            'response_format': {'type':'json_object'}
-        }
-        headers = {
-            'api-key': self.api_key,
-            'Content-Type': 'application/json',
-        }
-        logger.debug("AzureOpenAIAdapter.call: resource=%s deployment=%s", self.resource, self.deployment)
-        try:
-            resp = requests.post(url, headers=headers, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("AzureOpenAI network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'azure-openai','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("AzureOpenAI HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'azure-openai','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        content = self._extract_content(resp.json())
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("AzureOpenAI parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'azure-openai','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("AzureOpenAI: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'azure-openai'}
-
-
-class AnthropicAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        self.api_key = os.environ.get('ANTHROPIC_API_KEY','')
-        self.model = os.environ.get('ANTHROPIC_MODEL','claude-3-5-sonnet-20240620')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
-
-    def select(self, payload: Dict[str, Any]):
-        if not self.api_key:
-            raise RuntimeError('AnthropicAdapter not configured: set ANTHROPIC_API_KEY')
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        url = 'https://api.anthropic.com/v1/messages'
-        headers = {
-            'x-api-key': self.api_key,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json'
-        }
-        body = {
-            'model': self.model,
-            'max_tokens': self.max_tokens,
-            'temperature': self.temperature,
-            'system': sys_prompt,
-            'messages': [ {'role':'user','content':user_prompt} ]
-        }
-        logger.debug("AnthropicAdapter.call: model=%s", self.model)
-        try:
-            resp = requests.post(url, headers=headers, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("Anthropic network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'anthropic','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("Anthropic HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'anthropic','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        data = resp.json()
-        try:
-            # Newer API returns list of content blocks
-            if isinstance(data.get('content'), list):
-                content = ''.join(part.get('text','') for part in data['content'])
-            else:
-                content = json.dumps(data)
-        except Exception:
-            content = json.dumps(data)
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("Anthropic parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'anthropic','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("Anthropic: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'anthropic'}
 
 
 class GeminiAdapter(ExternalLLMAdapter):
@@ -355,45 +274,3 @@ class GeminiAdapter(ExternalLLMAdapter):
         conf = float(parsed.get('confidence',0.5))
         logger.info("Gemini: selected=%d conf=%.2f", len(selected), conf)
         return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'gemini'}
-
-
-class CohereAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        self.api_key = os.environ.get('COHERE_API_KEY','')
-        self.model = os.environ.get('COHERE_MODEL','command-r-plus')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
-
-    def select(self, payload: Dict[str, Any]):
-        if not self.api_key:
-            raise RuntimeError('CohereAdapter not configured: set COHERE_API_KEY')
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        url = 'https://api.cohere.com/v1/chat'
-        headers = { 'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json' }
-        body = {
-            'model': self.model,
-            'message': user_prompt,
-            'preamble': sys_prompt,
-            'temperature': self.temperature,
-            'max_tokens': self.max_tokens
-        }
-        logger.debug("CohereAdapter.call: model=%s", self.model)
-        try:
-            resp = requests.post(url, headers=headers, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("Cohere network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'cohere','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("Cohere HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'cohere','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        data = resp.json()
-        content = data.get('text') or json.dumps(data)
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("Cohere parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'cohere','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("Cohere: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'cohere'}

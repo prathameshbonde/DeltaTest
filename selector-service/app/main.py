@@ -5,12 +5,8 @@ from fastapi.responses import JSONResponse
 from .schemas import SelectRequest, SelectResponse
 from .selector import select_tests
 from .model_adapter import (
-    MockLLM,
     ExternalLLMAdapter,
-    CohereAdapter,
-    GeminiAdapter,
-    AnthropicAdapter,
-    AzureOpenAIAdapter
+    GeminiAdapter
 )
 from .env_loader import load_dotenv_once
 
@@ -48,21 +44,9 @@ async def select_tests_endpoint(req: SelectRequest):
             adapter = ExternalLLMAdapter()
             logger.debug("adapter: openai-compatible endpoint=%s model=%s", os.environ.get('LLM_ENDPOINT','(default)'), os.environ.get('LLM_MODEL','gpt-4o-mini'))
             selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('azure','azure-openai'):
-            adapter = AzureOpenAIAdapter()
-            logger.debug("adapter: azure-openai resource=%s deployment=%s", os.environ.get('AZURE_OPENAI_ENDPOINT',''), os.environ.get('AZURE_OPENAI_DEPLOYMENT',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('anthropic','claude'):
-            adapter = AnthropicAdapter()
-            logger.debug("adapter: anthropic model=%s", os.environ.get('ANTHROPIC_MODEL',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
         elif mode in ('gemini','google'):
             adapter = GeminiAdapter()
             logger.debug("adapter: gemini model=%s", os.environ.get('GEMINI_MODEL',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('cohere',):
-            adapter = CohereAdapter()
-            logger.debug("adapter: cohere model=%s", os.environ.get('COHERE_MODEL',''))
             selected, explanations, confidence, metadata = adapter.select(req.dict())
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported LLM_MODE {mode}")

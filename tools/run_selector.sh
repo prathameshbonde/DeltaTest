@@ -34,6 +34,7 @@ info "Starting selector orchestration (project_root=$PROJECT_ROOT base=$BASE_REF
 
 export BASE_REF
 export HEAD_REF
+export PROJECT_ROOT
 
 info "Computing changed files"
 bash tools/compute_changed_files.sh "$BASE_REF" "$HEAD_REF" tools/output/changed_files.json "$PROJECT_ROOT"
@@ -61,7 +62,81 @@ fi
 debug "Assembling input_for_llm.json"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
   $PY - << 'PY'
-import json, os
+import json, os, re
+from pathlib import Path
+
+def build_allowed_tests(root: str):
+  tests = []
+  root_path = Path(root or '.')
+  for p in root_path.rglob('src/test/java/**/*.java'):
+    try:
+      text = p.read_text(encoding='utf-8', errors='ignore')
+    except Exception:
+      continue
+    pkg = None
+    m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', text, re.MULTILINE)
+    if m:
+      pkg = m.group(1)
+    lines = text.splitlines()
+    brace = 0
+    pending_class = None
+    class_stack = []
+    class_brace_levels = []
+    pending_test_annot = False
+    # Patterns
+    class_re = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?class\s+([A-Za-z_][\w$]*)\b')
+    method_header = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?[\w\[\].<>]+\s+([A-Za-z_][\w$]*)\s*\([^)]*\)')
+    for line in lines:
+      # track annotations
+      if '@Test' in line or '@org.junit.Test' in line or '@ParameterizedTest' in line or '@RepeatedTest' in line:
+        pending_test_annot = True
+      cm = class_re.match(line)
+      if cm:
+        pending_class = cm.group(1)
+        # class body may open on same line
+        if '{' in line:
+          brace += line.count('{') - line.count('}')
+          class_stack.append(pending_class)
+          class_brace_levels.append(brace)
+          pending_class = None
+          continue
+      # method detection
+      mm = method_header.match(line)
+      if mm and class_stack:
+        name = mm.group(1)
+        is_junit4 = name.startswith('test')
+        if pending_test_annot or is_junit4:
+          cls = '$'.join(class_stack)
+          fqc = (pkg + '.' if pkg else '') + cls
+          tests.append(f"{fqc}#{name}")
+        pending_test_annot = False
+      # brace tracking and class pushes/pops
+      if pending_class and '{' in line:
+        # handled above, but keep for robustness
+        pass
+      if '{' in line or '}' in line:
+        opens = line.count('{')
+        closes = line.count('}')
+        # If we saw a class header earlier and encounter first '{', push class
+        if pending_class and opens > 0:
+          brace += opens
+          class_stack.append(pending_class)
+          class_brace_levels.append(brace)
+          pending_class = None
+          # consume remaining braces for this line
+          if closes:
+            brace -= closes
+        else:
+          brace += opens
+          brace -= closes
+        # Pop classes whose scope ended
+        while class_brace_levels and brace < class_brace_levels[-1]:
+          class_brace_levels.pop()
+          class_stack.pop()
+    # end for lines
+  return sorted(set(tests))
+
+allowed = build_allowed_tests(os.environ.get('PROJECT_ROOT') or '.')
 out = {
   "repo": {
     "name": os.path.basename(os.getcwd()),
@@ -71,6 +146,7 @@ out = {
   "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
   "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
   "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
+  "allowed_tests": allowed,
   "settings": {
     "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
     "max_tests": 500
@@ -82,7 +158,71 @@ print('Wrote tools/output/input_for_llm.json')
 PY
 elif [[ "$PY" == "py -3" ]]; then
   py -3 - << 'PY'
-import json, os
+import json, os, re
+from pathlib import Path
+
+def build_allowed_tests(root: str):
+  tests = []
+  root_path = Path(root or '.')
+  for p in root_path.rglob('src/test/java/**/*.java'):
+    try:
+      text = p.read_text(encoding='utf-8', errors='ignore')
+    except Exception:
+      continue
+    pkg = None
+    m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', text, re.MULTILINE)
+    if m:
+      pkg = m.group(1)
+    lines = text.splitlines()
+    brace = 0
+    pending_class = None
+    class_stack = []
+    class_brace_levels = []
+    pending_test_annot = False
+    class_re = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?class\s+([A-Za-z_][\w$]*)\b')
+    method_header = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?[\w\[\].<>]+\s+([A-Za-z_][\w$]*)\s*\([^)]*\)')
+    for line in lines:
+      if '@Test' in line or '@org.junit.Test' in line or '@ParameterizedTest' in line or '@RepeatedTest' in line:
+        pending_test_annot = True
+      cm = class_re.match(line)
+      if cm:
+        pending_class = cm.group(1)
+        if '{' in line:
+          brace += line.count('{') - line.count('}')
+          class_stack.append(pending_class)
+          class_brace_levels.append(brace)
+          pending_class = None
+          continue
+      mm = method_header.match(line)
+      if mm and class_stack:
+        name = mm.group(1)
+        is_junit4 = name.startswith('test')
+        if pending_test_annot or is_junit4:
+          cls = '$'.join(class_stack)
+          fqc = (pkg + '.' if pkg else '') + cls
+          tests.append(f"{fqc}#{name}")
+        pending_test_annot = False
+      if pending_class and '{' in line:
+        pass
+      if '{' in line or '}' in line:
+        opens = line.count('{')
+        closes = line.count('}')
+        if pending_class and opens > 0:
+          brace += opens
+          class_stack.append(pending_class)
+          class_brace_levels.append(brace)
+          pending_class = None
+          if closes:
+            brace -= closes
+        else:
+          brace += opens
+          brace -= closes
+        while class_brace_levels and brace < class_brace_levels[-1]:
+          class_brace_levels.pop()
+          class_stack.pop()
+  return sorted(set(tests))
+
+allowed = build_allowed_tests(os.environ.get('PROJECT_ROOT') or '.')
 out = {
   "repo": {
     "name": os.path.basename(os.getcwd()),
@@ -92,6 +232,7 @@ out = {
   "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
   "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
   "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
+  "allowed_tests": allowed,
   "settings": {
     "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
     "max_tests": 500
@@ -145,6 +286,35 @@ else
   echo '{"selected_tests":[],"confidence":0.0,"reason":"python-missing"}' > selector_output.json
 fi
 
+if [[ -n "$PY" && "$PY" != "py -3" ]]; then
+  # Enforce allowed_tests filter to prevent hallucinated selections
+  $PY - << 'PY'
+import json
+inp = json.load(open('tools/output/input_for_llm.json'))
+allowed = set(inp.get('allowed_tests') or [])
+sel = json.load(open('selector_output.json'))
+selected = [t for t in sel.get('selected_tests', []) if (not allowed) or (t in allowed)]
+ex = {k:v for k,v in (sel.get('explanations') or {}).items() if k in selected}
+sel['selected_tests'] = selected
+sel['explanations'] = ex
+open('selector_output.json','w').write(json.dumps(sel, indent=2))
+print('Filtered selector_output.json against allowed_tests')
+PY
+elif [[ "$PY" == "py -3" ]]; then
+  py -3 - << 'PY'
+import json
+inp = json.load(open('tools/output/input_for_llm.json'))
+allowed = set(inp.get('allowed_tests') or [])
+sel = json.load(open('selector_output.json'))
+selected = [t for t in sel.get('selected_tests', []) if (not allowed) or (t in allowed)]
+ex = {k:v for k,v in (sel.get('explanations') or {}).items() if k in selected}
+sel['selected_tests'] = selected
+sel['explanations'] = ex
+open('selector_output.json','w').write(json.dumps(sel, indent=2))
+print('Filtered selector_output.json against allowed_tests')
+PY
+fi
+ 
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
   CONF=$($PY -c "import json;print(json.load(open('selector_output.json'))['confidence'])")
 elif [[ "$PY" == "py -3" ]]; then

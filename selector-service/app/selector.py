@@ -12,15 +12,20 @@ def build_reachability(changed_files: List[Dict[str, Any]],
     # For demo: convert .../java/com/foo/Bar.java -> com.foo.Bar; methods unknown
     changed_classes: Set[str] = set()
     for cf in changed_files:
-        p = cf.get('path','')
-        if '/src/main/java/' in p or '/src/test/java/' in p:
-            rel = p.split('/src/')[1]
-            try:
-                pkg_path = rel.split('/java/')[1]
-                cls = pkg_path.replace('/', '.').replace('.java','')
-                changed_classes.add(cls)
-            except Exception:
-                pass
+        # Prefer already computed fully qualified class if available
+        fqc = cf.get('fully_qualified_class')
+        if fqc:
+            changed_classes.add(fqc)
+        else:
+            p = cf.get('path','')
+            if '/src/main/java/' in p or '/src/test/java/' in p:
+                rel = p.split('/src/')[1]
+                try:
+                    pkg_path = rel.split('/java/')[1]
+                    cls = pkg_path.replace('/', '.').replace('.java','')
+                    changed_classes.add(cls)
+                except Exception:
+                    pass
 
     # Build adjacency for call graph at method level
     call_adj: Dict[str, Set[str]] = {}
@@ -37,6 +42,17 @@ def build_reachability(changed_files: List[Dict[str, Any]],
     # From classes, mark all methods starting with Class# (unknown set)
     # Here we just seed class names as pseudo-nodes and expand via call graph/class graph
     frontier: List[str] = list(changed_classes)
+    # Also seed method-level nodes whose declaring class is among changed classes, so method call edges are discovered
+    for caller in list(call_adj.keys()):
+        cls_part = caller.split('#')[0]
+        if cls_part in changed_classes:
+            frontier.append(caller)
+    # Seed with touched methods if provided
+    for cf in changed_files:
+        for m in cf.get('touched_methods', []) or []:
+            fqn = m.get('fqn')
+            if fqn:
+                frontier.append(fqn)
     visited: Set[str] = set()
 
     while frontier:

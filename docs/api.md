@@ -8,7 +8,15 @@ Request: JSON payload built by tools/run_selector.sh
 {
   "repo": {"name":"example-monorepo","base_commit":"origin/main","head_commit":"HEAD"},
   "changed_files": [
-    {"path":"libs/service-a/src/main/java/com/foo/Bar.java","change_type":"M","hunks":[{"start":10,"end":16}]}
+    {
+      "path":"libs/service-a/src/main/java/com/foo/Bar.java",
+      "change_type":"M",
+      "hunks":[{"start":10,"end":16}],
+      "file_name":"Bar.java",
+      "lang":"java",
+      "fully_qualified_class":"com.foo.Bar",
+      "touched_methods":[{"fqn":"com.foo.Bar#doWork","start_line":11,"end_line":28}]
+    }
   ],
   "jdeps_graph": {"com.foo.Bar":["com.foo.Baz"]},
   "call_graph": [
