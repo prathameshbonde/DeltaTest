@@ -14,9 +14,6 @@ Request: JSON payload built by tools/run_selector.sh
   "call_graph": [
     {"caller":"com.foo.Bar#doWork","callee":"com.foo.Baz#doIt"}
   ],
-  "test_mapping": [
-    {"test":"com.foo.BarTest#testDoWork","covers":["com.foo.Bar#doWork","com.foo.Baz#doIt"]}
-  ],
   "settings": {"confidence_threshold":0.6,"max_tests":500}
 }
 ```

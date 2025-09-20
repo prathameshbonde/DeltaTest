@@ -6,14 +6,11 @@ from .schemas import SelectRequest, SelectResponse
 from .selector import select_tests
 from .model_adapter import (
     MockLLM,
-    ExternalLLMAdapter,  # backward compatible alias for OpenAI-compatible
-    OpenRouterAdapter,
-    MistralAdapter,
+    ExternalLLMAdapter,
     CohereAdapter,
     GeminiAdapter,
     AnthropicAdapter,
-    AzureOpenAIAdapter,
-    OllamaAdapter,
+    AzureOpenAIAdapter
 )
 from .env_loader import load_dotenv_once
 
@@ -33,10 +30,9 @@ async def root():
 async def select_tests_endpoint(req: SelectRequest):
     try:
         mode = os.environ.get('LLM_MODE', 'mock').lower()
-        logger.info("/select-tests request: mode=%s, changed=%d, mapping=%d, call_edges=%d, jdeps_nodes=%d, max_tests=%d",
+        logger.info("/select-tests request: mode=%s, changed=%d, call_edges=%d, jdeps_nodes=%d, max_tests=%d",
                     mode,
                     len(req.changed_files),
-                    len(req.test_mapping),
                     len(req.call_graph),
                     len(req.jdeps_graph),
                     req.settings.max_tests)
@@ -46,7 +42,6 @@ async def select_tests_endpoint(req: SelectRequest):
                 changed_files=[cf.dict() for cf in req.changed_files],
                 call_graph=req.call_graph,
                 jdeps_graph=req.jdeps_graph,
-                test_mapping=req.test_mapping,
                 max_tests=req.settings.max_tests,
             )
         elif mode in ('remote','openai','openai-compatible'):
@@ -68,18 +63,6 @@ async def select_tests_endpoint(req: SelectRequest):
         elif mode in ('cohere',):
             adapter = CohereAdapter()
             logger.debug("adapter: cohere model=%s", os.environ.get('COHERE_MODEL',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('mistral',):
-            adapter = MistralAdapter()
-            logger.debug("adapter: mistral endpoint=%s model=%s", os.environ.get('MISTRAL_ENDPOINT',''), os.environ.get('MISTRAL_MODEL',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('openrouter',):
-            adapter = OpenRouterAdapter()
-            logger.debug("adapter: openrouter model=%s", os.environ.get('OPENROUTER_MODEL',''))
-            selected, explanations, confidence, metadata = adapter.select(req.dict())
-        elif mode in ('ollama','local'):
-            adapter = OllamaAdapter()
-            logger.debug("adapter: ollama host=%s model=%s", os.environ.get('OLLAMA_HOST',''), os.environ.get('OLLAMA_MODEL',''))
             selected, explanations, confidence, metadata = adapter.select(req.dict())
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported LLM_MODE {mode}")

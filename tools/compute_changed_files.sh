@@ -5,18 +5,18 @@ LOG_LEVEL=${LOG_LEVEL:-INFO}
 _ts() { date +"%Y-%m-%dT%H:%M:%S"; }
 _lvl() { echo "$1" | tr '[:lower:]' '[:upper:]'; }
 log() { echo "[$(_ts)] [$(_lvl "$1")] $2"; }
-info() { log INFO "$2"; }
-warn() { log WARN "$2"; }
+info() { log INFO "$1"; }
+warn() { log WARN "$1"; }
 
 # compute_changed_files.sh
-# Usage: compute_changed_files.sh <base> <head> <output_json>
+# Usage: compute_changed_files.sh <base> <head> <output_json> [project_root]
 # Outputs JSON with changed files and hunks.
 
 BASE_REF=${1:-origin/main}
 HEAD_REF=${2:-HEAD}
 OUT=${3:-tools/output/changed_files.json}
+PROJECT_ROOT=${4:-}
 
-# Resolve Python executable
 # Resolve Python executable (Windows-friendly)
 PY=""
 if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/Scripts/python.exe" ]]; then
@@ -36,48 +36,63 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 
+# Build git command to operate within the requested project root
+GIT_CMD=(git)
+if [[ -n "$PROJECT_ROOT" ]]; then
+  if [[ -d "$PROJECT_ROOT" ]]; then
+    GIT_CMD=(git -C "$PROJECT_ROOT")
+  else
+    warn "Project root '$PROJECT_ROOT' does not exist; using current directory."
+  fi
+fi
+
 # If not a git repo, or no commits yet, write empty changes and exit cleanly
-if ! git rev-parse --git-dir >/dev/null 2>&1; then
-    log WARN "Not a git repository; producing empty change set."
+if ! "${GIT_CMD[@]}" rev-parse --git-dir >/dev/null 2>&1; then
+    warn "Not a git repository at ${PROJECT_ROOT:-.}; producing empty change set."
     echo "[]" > "$OUT"
     exit 0
 fi
 
+exists_commit() {
+    "${GIT_CMD[@]}" rev-parse --verify "$1^{commit}" >/dev/null 2>&1
+}
+
 # Normalize HEAD ref
-if ! git rev-parse "$HEAD_REF" >/dev/null 2>&1; then
-        if git rev-parse HEAD >/dev/null 2>&1; then
-            log WARN "Head ref $HEAD_REF not found; using HEAD."
+if ! exists_commit "$HEAD_REF"; then
+    if exists_commit HEAD; then
+        warn "Head ref $HEAD_REF not found; using HEAD."
         HEAD_REF="HEAD"
     else
-            log WARN "No commits yet; producing empty change set."
+        warn "No commits yet in repo; producing empty change set."
         echo "[]" > "$OUT"
         exit 0
     fi
 fi
 
 # Ensure we have a valid base; if missing, use the empty tree so first-commit diffs work
-if ! git rev-parse "$BASE_REF" >/dev/null 2>&1; then
-    EMPTY_TREE=$(git hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)
-        log WARN "Base ref $BASE_REF not found; falling back to empty tree."
+if ! exists_commit "$BASE_REF"; then
+    EMPTY_TREE=$("${GIT_CMD[@]}" hash-object -t tree /dev/null 2>/dev/null || echo 4b825dc642cb6eb9a060e54bf8d69288fbee4904)
+    warn "Base ref $BASE_REF not found; falling back to empty tree."
     BASE_REF="$EMPTY_TREE"
 fi
 
-# Export the (potentially adjusted) refs for the Python snippet below
+# Export for Python step
 export BASE_REF
 export HEAD_REF
+export REPO_CWD="$PROJECT_ROOT"
 
 # Collect changed files and hunks using git diff --unified=0
 TMP=$(mktemp)
 # Windows Git Bash mktemp compatibility
 if [[ ! -f "$TMP" ]]; then TMP=$(mktemp -t tmp.XXXXXX); fi
 
-log INFO "Computing git diff between $BASE_REF and $HEAD_REF"
-git diff --no-color -U0 "$BASE_REF" "$HEAD_REF" > "$TMP" || true
+log INFO "Computing git diff between $BASE_REF and $HEAD_REF${PROJECT_ROOT:+ in repo '$PROJECT_ROOT'}"
+"${GIT_CMD[@]}" diff --no-color -U0 "$BASE_REF" "$HEAD_REF" > "$TMP" || true
 
 # Run embedded Python, supporting both "python" and "py -3"
 if [[ "$PY" == "py -3" ]]; then
   py -3 - "$TMP" "$OUT" << 'PY'
-import json, re, sys, os
+import json, re, sys, os, subprocess
 
 diff_path, out_path = sys.argv[1], sys.argv[2]
 changed = []
@@ -86,12 +101,16 @@ hunk_re = re.compile(r'^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new
 file_re = re.compile(r'^\+\+\+ b\/(.*)$')
 change_type_map = {}
 
-# Use name-status for change type
-import subprocess
 base = os.environ.get("BASE_REF","origin/main")
 head = os.environ.get("HEAD_REF","HEAD")
+repo = os.environ.get("REPO_CWD", "").strip()
+
+args = ["git"]
+if repo:
+    args += ["-C", repo]
+args += ["diff","--name-status", base, head]
 try:
-    ns = subprocess.check_output(["git","diff","--name-status",base, head], text=True)
+    ns = subprocess.check_output(args, text=True)
 except Exception:
     ns = ""
 for line in ns.strip().splitlines():
@@ -121,7 +140,7 @@ print(f"Wrote {out_path}")
 PY
 else
   $PY - "$TMP" "$OUT" << 'PY'
-import json, re, sys, os
+import json, re, sys, os, subprocess
 
 diff_path, out_path = sys.argv[1], sys.argv[2]
 changed = []
@@ -130,12 +149,16 @@ hunk_re = re.compile(r'^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new
 file_re = re.compile(r'^\+\+\+ b\/(.*)$')
 change_type_map = {}
 
-# Use name-status for change type
-import subprocess
 base = os.environ.get("BASE_REF","origin/main")
 head = os.environ.get("HEAD_REF","HEAD")
+repo = os.environ.get("REPO_CWD", "").strip()
+
+args = ["git"]
+if repo:
+    args += ["-C", repo]
+args += ["diff","--name-status", base, head]
 try:
-    ns = subprocess.check_output(["git","diff","--name-status",base, head], text=True)
+    ns = subprocess.check_output(args, text=True)
 except Exception:
     ns = ""
 for line in ns.strip().splitlines():

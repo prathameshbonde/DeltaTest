@@ -4,7 +4,7 @@ This project computes a minimal set of tests to run for a PR by combining:
 - Changed files and hunks via git diff
 - Class-level dependencies via jdeps
 - Function-level call graph via a javap-based fallback (Soot can be integrated later)
-- Mapping from test methods to code under test via heuristics and bytecode/source scan
+  
 
 It then builds a JSON payload consumed by a FastAPI service that can use either:
 - Mock LLM (deterministic rule-based, default)
@@ -17,7 +17,7 @@ The service returns selected tests and explanations with a confidence score; the
 - tools/compute_changed_files.sh: produces changed_files.json
 - tools/run_jdeps.sh: produces jdeps_graph.json
 - tools/run_soot.sh: produces call_graph.json using javap -c fallback
-- tools/map_tests_to_code/: produces test_mapping.json
+  
 - tools/run_selector.sh: orchestrates, calls selector-service, runs gradle tests
 - selector-service/: FastAPI app with schemas, selector logic, model adapters
 - example-monorepo/: A Gradle monorepo with two services and JUnit tests
@@ -25,11 +25,10 @@ The service returns selected tests and explanations with a confidence score; the
 ## Selection Algorithm (Fallback)
 1. Parse changed files and line hunks.
 2. Use call graph and jdeps to find reachable methods/classes affected.
-3. Match test mapping entries whose covered methods/classes intersect the reachable set.
+3. Select tests whose packages or classes intersect with the reachable set using heuristics based on code locality and dependency impact.
 4. Score confidence based on:
-   - Graph distance from changed methods to covered methods
+   - Graph distance from changed methods to impacted methods/classes
    - Number of changed lines (smaller changes -> higher confidence)
-   - Mapping density (fraction of covered methods resolved)
 5. Explanations summarize the edges and changed files that triggered each test.
 
 ## Why javap vs Soot?

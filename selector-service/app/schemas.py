@@ -29,7 +29,6 @@ class SelectRequest(BaseModel):
     changed_files: List[ChangedFile] = Field(default_factory=list)
     jdeps_graph: Dict[str, List[str]] = Field(default_factory=dict)
     call_graph: List[Dict[str, str]] = Field(default_factory=list)  # {caller, callee}
-    test_mapping: List[Dict[str, Any]] = Field(default_factory=list)  # {test, covers: []}
     settings: Settings = Settings()
 
 

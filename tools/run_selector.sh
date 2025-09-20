@@ -36,26 +36,11 @@ export BASE_REF
 export HEAD_REF
 
 info "Computing changed files"
-bash tools/compute_changed_files.sh "$BASE_REF" "$HEAD_REF" tools/output/changed_files.json
+bash tools/compute_changed_files.sh "$BASE_REF" "$HEAD_REF" tools/output/changed_files.json "$PROJECT_ROOT"
 info "Building jdeps graph (best-effort)"
 bash tools/run_jdeps.sh "$PROJECT_ROOT" tools/output/jdeps_graph.json || true
 info "Building call graph (best-effort)"
 bash tools/run_soot.sh "$PROJECT_ROOT" tools/output/call_graph.json || true
-
-# Build test mapping using the helper Gradle module (in example-monorepo this is included)
-# Skip quietly if Java is unavailable to avoid noisy errors on fresh machines.
-if command -v java >/dev/null 2>&1 || [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
-  info "Running test-to-code mapping via Gradle"
-  if [ -f "gradlew" ]; then
-    ./gradlew :tools:map_tests_to_code:build :tools:map_tests_to_code:mapTestsToCode --no-daemon || true
-  elif [ -f "gradlew.bat" ]; then
-    ./gradlew.bat :tools:map_tests_to_code:build :tools:map_tests_to_code:mapTestsToCode --no-daemon || true
-  else
-    gradle :tools:map_tests_to_code:build :tools:map_tests_to_code:mapTestsToCode --no-daemon || true
-  fi
-else
-  warn "Java not found; skipping test mapping step."
-fi
 
 # Resolve Python (Windows-friendly)
 PY=""
@@ -86,7 +71,6 @@ out = {
   "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
   "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
   "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
-  "test_mapping": json.load(open('tools/output/test_mapping.json')) if os.path.exists('tools/output/test_mapping.json') else [],
   "settings": {
     "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
     "max_tests": 500
@@ -108,7 +92,6 @@ out = {
   "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
   "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
   "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
-  "test_mapping": json.load(open('tools/output/test_mapping.json')) if os.path.exists('tools/output/test_mapping.json') else [],
   "settings": {
     "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
     "max_tests": 500

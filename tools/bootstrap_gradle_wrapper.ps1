@@ -27,8 +27,14 @@ New-Item -ItemType Directory -Force -Path $expandDir | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpZip, $expandDir)
 
-$wrapperJar = Get-ChildItem -Path $expandDir -Recurse -Filter 'gradle-wrapper-*.jar' | Select-Object -First 1
-if (-not $wrapperJar) { Write-Error "Could not find gradle-wrapper-*.jar in distribution." }
+$wrapperJars = Get-ChildItem -Path $expandDir -Recurse -Filter 'gradle-wrapper-*.jar'
+if (-not $wrapperJars) { Write-Error "Could not find gradle-wrapper-*.jar in distribution." }
+# Prefer the non-shared jar (gradle-wrapper-<ver>.jar), exclude gradle-wrapper-shared-*.jar
+$wrapperJar = $wrapperJars | Where-Object { $_.Name -notmatch 'shared' } | Select-Object -First 1
+if (-not $wrapperJar) {
+  # Fallback to any if filter failed
+  $wrapperJar = $wrapperJars | Select-Object -First 1
+}
 
 Copy-Item $wrapperJar.FullName -Destination $jarPath -Force
 Write-Host "Wrote $jarPath"

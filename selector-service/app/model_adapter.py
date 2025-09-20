@@ -15,22 +15,12 @@ class MockLLM:
         pass
 
     def select(self, payload: Dict[str, Any]) -> Tuple[List[str], Dict[str, str], float, Dict[str, Any]]:
-        # Delegate to deterministic heuristics would happen in selector.py; here we just pass-through by contract
-        # For the mock, just select tests where any 'covers' exists when there are changes
-        tests = []
-        explanations = {}
-        tm = payload.get('test_mapping', [])
+        # Deterministic fallback lives in selector.py. The mock adapter doesn't invent tests without mapping.
         changed = payload.get('changed_files', [])
         if not changed:
-            return [], {}, 0.5, {'reason': 'no changes'}
-        for e in tm:
-            if e.get('covers'):
-                tests.append(e['test'])
-                explanations[e['test']] = 'Mock selection: has covers and repo changed.'
-        conf = 0.7 if tests else 0.4
-        result = tests[: payload.get('settings', {}).get('max_tests', 500)]
-        logger.debug("MockLLM.select: changed=%d mapping=%d -> selected=%d conf=%.2f", len(changed), len(tm), len(result), conf)
-        return result, explanations, conf, {'mode': 'mock'}
+            return [], {}, 0.5, {'reason': 'no changes', 'mode': 'mock'}
+        logger.debug("MockLLM.select: changed=%d -> selected=%d conf=%.2f", len(changed), 0, 0.4)
+        return [], {}, 0.4, {'mode': 'mock'}
 
 
 class ExternalLLMAdapter:
@@ -115,7 +105,7 @@ class ExternalLLMAdapter:
         return (
             "You are an expert build/CI assistant that selects the minimal yet sufficient set of JUnit tests "
             "to run for a given code change in a large Java Gradle monorepo. "
-            "Use only the provided structured inputs (changed files with hunks, test-to-code mapping, dependency graphs). "
+            "Use only the provided structured inputs (changed files with hunks and dependency graphs). "
             "Favor precision and recall trade-offs that keep runtime low while maintaining correctness. "
             "Always respond with a strict JSON object matching this schema: "
             "{\n  \"selected_tests\": string[],\n  \"explanations\": { [test: string]: string },\n  \"confidence\": number,\n  \"metadata\": object\n}. "
@@ -135,7 +125,6 @@ class ExternalLLMAdapter:
         changed = payload.get('changed_files', [])
         jdeps = payload.get('jdeps_graph', {})
         call_graph = payload.get('call_graph', [])
-        test_map = payload.get('test_mapping', [])
 
         def summarize_changed(max_items=100) -> str:
             parts = []
@@ -145,17 +134,6 @@ class ExternalLLMAdapter:
             more = max(0, len(changed) - max_items)
             if more:
                 parts.append(f"... and {more} more files")
-            return "\n".join(parts) if parts else "(none)"
-
-        def summarize_test_map(max_items=200) -> str:
-            parts = []
-            for e in test_map[:max_items]:
-                t = e.get('test','?')
-                covers = e.get('covers', [])[:5]
-                parts.append(f"- {t} -> covers: {covers}")
-            more = max(0, len(test_map) - max_items)
-            if more:
-                parts.append(f"... and {more} more tests")
             return "\n".join(parts) if parts else "(none)"
 
         def summarize_graphs(max_edges=200) -> str:
@@ -177,7 +155,7 @@ class ExternalLLMAdapter:
 
         instructions = (
             "Task: From the inputs, choose up to {max_tests} JUnit tests that most likely cover or are impacted by the changes. "
-            "Use test_mapping to link tests to classes/methods. Use jdeps/call graph for transitive impact. "
+            "Use jdeps/call graph for transitive impact. "
             "Prefer fewer tests when confidence is high; include more when changes are wide or uncertain. "
             "If there is no signal, return an empty list with a lower confidence and explain why."
         ).format(max_tests=max_tests)
@@ -186,7 +164,6 @@ class ExternalLLMAdapter:
             f"Repository: {name}\n"
             f"Base: {base}\nHead: {head}\n\n"
             f"Changed files:\n{summarize_changed()}\n\n"
-            f"Test mapping (sample):\n{summarize_test_map()}\n\n"
             f"Graphs summary:\n{summarize_graphs()}\n\n"
             f"{instructions}\n\n"
             "Return strictly JSON with keys: selected_tests, explanations, confidence, metadata."
@@ -420,129 +397,3 @@ class CohereAdapter(ExternalLLMAdapter):
         conf = float(parsed.get('confidence',0.5))
         logger.info("Cohere: selected=%d conf=%.2f", len(selected), conf)
         return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'cohere'}
-
-
-class MistralAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        self.endpoint = os.environ.get('MISTRAL_ENDPOINT','https://api.mistral.ai/v1/chat/completions')
-        self.api_key = os.environ.get('MISTRAL_API_KEY','')
-        self.model = os.environ.get('MISTRAL_MODEL','mistral-large-latest')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
-
-    def select(self, payload: Dict[str, Any]):
-        if not self.api_key:
-            raise RuntimeError('MistralAdapter not configured: set MISTRAL_API_KEY')
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        headers = { 'Authorization': f'Bearer {self.api_key}', 'Content-Type':'application/json' }
-        body = {
-            'model': self.model,
-            'messages': [ {'role':'system','content':sys_prompt}, {'role':'user','content':user_prompt} ],
-            'temperature': self.temperature,
-            'max_tokens': self.max_tokens,
-            'response_format': {'type':'json_object'}
-        }
-        logger.debug("MistralAdapter.call: endpoint=%s model=%s", self.endpoint, self.model)
-        try:
-            resp = requests.post(self.endpoint, headers=headers, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("Mistral network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'mistral','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("Mistral HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'mistral','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        content = self._extract_content(resp.json())
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("Mistral parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'mistral','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("Mistral: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'mistral'}
-
-
-class OpenRouterAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        self.endpoint = os.environ.get('OPENROUTER_ENDPOINT','https://openrouter.ai/api/v1/chat/completions')
-        self.api_key = os.environ.get('OPENROUTER_API_KEY','')
-        self.model = os.environ.get('OPENROUTER_MODEL','openrouter/auto')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
-
-    def select(self, payload: Dict[str, Any]):
-        if not self.api_key:
-            raise RuntimeError('OpenRouterAdapter not configured: set OPENROUTER_API_KEY')
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        headers = { 'Authorization': f'Bearer {self.api_key}', 'Content-Type':'application/json' }
-        body = {
-            'model': self.model,
-            'messages': [ {'role':'system','content':sys_prompt}, {'role':'user','content':user_prompt} ],
-            'temperature': self.temperature,
-            'max_tokens': self.max_tokens,
-            'response_format': {'type':'json_object'}
-        }
-        logger.debug("OpenRouterAdapter.call: endpoint=%s model=%s", self.endpoint, self.model)
-        try:
-            resp = requests.post(self.endpoint, headers=headers, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("OpenRouter network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'openrouter','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("OpenRouter HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'openrouter','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        content = self._extract_content(resp.json())
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("OpenRouter parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'openrouter','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("OpenRouter: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'openrouter'}
-
-
-class OllamaAdapter(ExternalLLMAdapter):
-    def __init__(self):
-        self.host = os.environ.get('OLLAMA_HOST','http://localhost:11434')
-        self.model = os.environ.get('OLLAMA_MODEL','llama3.1')
-        self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
-        self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
-
-    def select(self, payload: Dict[str, Any]):
-        sys_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(payload)
-        url = f"{self.host.rstrip('/')}/api/chat"
-        body = {
-            'model': self.model,
-            'messages': [
-                {'role':'system','content':sys_prompt},
-                {'role':'user','content':user_prompt}
-            ],
-            'stream': False,
-            'format': 'json'
-        }
-        logger.debug("OllamaAdapter.call: host=%s model=%s", self.host, self.model)
-        try:
-            resp = requests.post(url, json=body, timeout=60)
-        except requests.RequestException as e:
-            logger.warning("Ollama network error: %s", e.__class__.__name__)
-            return [], {}, 0.3, {'mode':'external','provider':'ollama','error':f'network:{e.__class__.__name__}'}
-        if resp.status_code >= 400:
-            logger.warning("Ollama HTTP error: %d", resp.status_code)
-            return [], {}, 0.3, {'mode':'external','provider':'ollama','error':f'http:{resp.status_code}','body':self._safe_text(resp)[:300]}
-        data = resp.json()
-        try:
-            content = data.get('message', {}).get('content') or json.dumps(data)
-        except Exception:
-            content = json.dumps(data)
-        parsed = self._parse_json(content) or self._parse_json(self._extract_first_json_block(content))
-        if not parsed:
-            logger.warning("Ollama parse failed")
-            return [], {}, 0.3, {'mode':'external','provider':'ollama','error':'parse-failed','raw':content[:500]}
-        selected = parsed.get('selected_tests',[])
-        conf = float(parsed.get('confidence',0.5))
-        logger.info("Ollama: selected=%d conf=%.2f", len(selected), conf)
-        return selected, parsed.get('explanations',{}), conf, {**parsed.get('metadata',{}), 'mode':'external','provider':'ollama'}

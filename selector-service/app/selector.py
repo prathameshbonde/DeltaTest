@@ -64,11 +64,10 @@ def build_reachability(changed_files: List[Dict[str, Any]],
 def select_tests(changed_files: List[Dict[str, Any]],
                  call_graph: List[Dict[str, str]],
                  jdeps_graph: Dict[str, List[str]],
-                 test_mapping: List[Dict[str, Any]],
                  max_tests: int = 500) -> Tuple[List[str], Dict[str,str], float, Dict[str, Any]]:
     logger.debug(
-        "select_tests: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, test_mapping=%d, max_tests=%d",
-        len(changed_files), len(call_graph), len(jdeps_graph), len(test_mapping), max_tests,
+        "select_tests: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, max_tests=%d",
+        len(changed_files), len(call_graph), len(jdeps_graph), max_tests,
     )
     reached_methods, reason_edges = build_reachability(changed_files, call_graph, jdeps_graph)
     logger.debug(
@@ -79,46 +78,22 @@ def select_tests(changed_files: List[Dict[str, Any]],
     selected: List[str] = []
     explanations: Dict[str,str] = {}
 
-    # Match tests whose covers intersect reached methods or changed classes
+    # With no explicit mapping, use a heuristic: select tests whose package matches changed classes' packages
     changed_paths = [c['path'] for c in changed_files]
+    changed_pkgs = set()
+    for cf in changed_files:
+        p = cf.get('path','')
+        if '/src/' in p and '/java/' in p:
+            try:
+                pkg_path = p.split('/src/')[1].split('/java/')[1]
+                pkg = '.'.join(pkg_path.split('/')[:-1])
+                changed_pkgs.add(pkg)
+            except Exception:
+                pass
+    logger.debug("heuristic: changed_pkgs=%s", sorted(changed_pkgs))
 
-    selected_by_reachability = 0
-    for tm in test_mapping:
-        test = tm.get('test')
-        covers = set(tm.get('covers', []))
-        if covers & reached_methods:
-            selected.append(test)
-            explanations[test] = 'Selected via call-graph reachability to covered methods.'
-            selected_by_reachability += 1
-
-    if selected_by_reachability:
-        logger.info("selection: %d tests selected via reachability", selected_by_reachability)
-
-    # Fallback: if nothing selected, choose tests in same package as changed classes
-    if not selected:
-        changed_pkgs = set()
-        for cf in changed_files:
-            p = cf.get('path','')
-            if '/src/' in p and '/java/' in p:
-                try:
-                    pkg_path = p.split('/src/')[1].split('/java/')[1]
-                    pkg = '.'.join(pkg_path.split('/')[:-1])
-                    changed_pkgs.add(pkg)
-                except Exception:
-                    pass
-        logger.debug("fallback: no tests via reachability; changed_pkgs=%s", sorted(changed_pkgs))
-        for tm in test_mapping:
-            test = tm.get('test')
-            test_pkg = '.'.join(test.split('#')[0].split('.')[:-1])
-            if test_pkg in changed_pkgs:
-                selected.append(test)
-                explanations[test] = 'Selected via package heuristic fallback.'
-                if len(selected) >= max_tests:
-                    break
-        if selected:
-            logger.info("fallback: %d tests selected via package heuristic", len(selected))
-        else:
-            logger.warn("fallback: no tests selected; returning empty selection")
+    # Note: Without a test catalog, we cannot enumerate tests here. In practice, the LLM adapters supply tests.
+    # This function returns empty selection; confidence reflects graph signal and change size only.
 
     selected = selected[:max_tests]
 
@@ -126,8 +101,8 @@ def select_tests(changed_files: List[Dict[str, Any]],
     num_changed_lines = sum((h['end'] - h['start'] + 1) for cf in changed_files for h in cf.get('hunks', [])) or 1
     distance_factor = min(1.0, 0.8 if reason_edges else 0.4)
     size_factor = max(0.3, min(1.0, 50.0 / num_changed_lines))
-    coverage_factor = min(1.0, len(selected) / max(1, len(test_mapping)))
-    confidence = round(min(1.0, 0.5*distance_factor + 0.3*size_factor + 0.2*coverage_factor), 2)
+    coverage_factor = 0.0
+    confidence = round(min(1.0, 0.6*distance_factor + 0.4*size_factor), 2)
     logger.debug(
         "confidence: num_changed_lines=%d, distance_factor=%.2f, size_factor=%.2f, coverage_factor=%.2f, final=%.2f",
         num_changed_lines, distance_factor, size_factor, coverage_factor, confidence,

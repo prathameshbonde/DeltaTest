@@ -3,7 +3,7 @@
 This repository provides an end-to-end, runnable example of a selective-test pipeline for large Java Gradle monorepos, powered by a small FastAPI service that can use a mock rule-based LLM or an external LLM provider (adapter placeholder).
 
 Highlights:
-- Compute a minimal set of tests to run for a PR based on git diff, class dependencies (jdeps), and a function-level call graph (javap-based fallback), plus a static mapping from tests to code under test.
+- Compute a minimal set of tests to run for a PR based on git diff, class dependencies (jdeps), and a function-level call graph (javap-based fallback).
 - Mock LLM selection logic that is deterministic and explainable by default (no internet required).
 - CI pipelines for GitHub Actions and Jenkins to run only selected tests and fail if the confidence is below a configurable threshold.
 - Example Gradle monorepo with two modules to demonstrate the pipeline.
