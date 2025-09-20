@@ -77,7 +77,7 @@ while [[ $start -lt $total ]]; do
   declare -a GRADLE_ARGS
   for (( i=start; i<end; i++ )); do
     # Quote patterns exactly; Gradle interprets '.' and '*' as patterns normally
-    GRADLE_ARGS+=( "--tests" "${TESTS[i]}" )
+    GRADLE_ARGS+=( "--tests" '${TESTS[i]}' )
   done
 
   # Execute
