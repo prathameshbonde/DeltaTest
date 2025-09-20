@@ -368,7 +368,7 @@ selected = sel.get('selected_tests', [])
 args = []
 for t in selected:
     cls, meth = t.split('#',1)
-    args.append(f"--tests {cls}.{meth}")
+    args.append(f"--tests {cls}.{meth}\n")
 open('tools/output/gradle_args.txt','w').write(' '.join(args))
 print('Wrote tools/output/gradle_args.txt')
 PY
@@ -380,7 +380,7 @@ selected = sel.get('selected_tests', [])
 args = []
 for t in selected:
     cls, meth = t.split('#',1)
-    args.append(f"--tests {cls}.{meth}")
+    args.append(f"--tests {cls}.{meth}\n")
 open('tools/output/gradle_args.txt','w').write(' '.join(args))
 print('Wrote tools/output/gradle_args.txt')
 PY
