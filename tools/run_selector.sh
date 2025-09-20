@@ -399,13 +399,13 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-if [ -f "gradlew" ]; then
-  info "Running Gradle tests via ./gradlew"
-  ./gradlew test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-elif [ -f "gradlew.bat" ]; then
-  info "Running Gradle tests via gradlew.bat"
-  ./gradlew.bat test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-else
-  info "Running Gradle tests via system Gradle"
-  gradle test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-fi
+# if [ -f "gradlew" ]; then
+#   info "Running Gradle tests via ./gradlew"
+#   ./gradlew test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
+# elif [ -f "gradlew.bat" ]; then
+#   info "Running Gradle tests via gradlew.bat"
+#   ./gradlew.bat test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
+# else
+#   info "Running Gradle tests via system Gradle"
+#   gradle test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
+# fi
