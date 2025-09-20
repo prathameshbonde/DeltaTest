@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-#
-# Run selectively chosen JUnit tests from tools/output/gradle_args.txt.
-# Intended for GitHub Actions (Linux) but works locally (Git Bash/WSL).
-#
-# Usage:
-#   .github/scripts/run_selected_tests.sh [args_file] [gradle_task]
-# Env:
-#   GRADLE_CMD (default: ./gradlew)
-#   CHUNK_SIZE (default: 150)  # number of tests per Gradle invocation
-#   FALLBACK_FULL_SUITE=1 to run full test suite if no selected tests
-#   GRADLE_FLAGS extra flags (e.g. "--no-daemon --build-cache")
 set -euo pipefail
 
 ARGS_FILE="${1:-tools/output/gradle_args.txt}"
@@ -28,14 +17,11 @@ if [[ ! -f "$ARGS_FILE" ]]; then
   fi
 fi
 
-# Collect tests
 declare -a TESTS
 while IFS= read -r line || [[ -n "$line" ]]; do
-  line="$(echo "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"  # trim
+  line="$(echo "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ -z "$line" ]] && continue
-  # Accept either "--tests com.Foo#bar" or raw "--tests ..." tokens
   if [[ "$line" == --tests* ]]; then
-    # If the line already starts with --tests, split into flag + value
     test_name="${line#--tests }"
     [[ -z "$test_name" || "$test_name" == "--tests" ]] && continue
     TESTS+=("$test_name")
@@ -57,12 +43,10 @@ echo "[selector] Found ${#TESTS[@]} selected tests."
 echo "[selector] Gradle task: $GRADLE_TASK"
 echo "[selector] Chunk size:  $CHUNK_SIZE"
 
-# Ensure wrapper is executable (useful in fresh checkouts)
 if [[ -f "./gradlew" ]]; then
   chmod +x ./gradlew || true
 fi
 
-# Run in chunks to avoid extremely long command lines
 total="${#TESTS[@]}"
 start=0
 chunk_index=1
@@ -73,18 +57,31 @@ while [[ $start -lt $total ]]; do
   [[ $end -gt $total ]] && end=$total
   echo "[selector] Running chunk $chunk_index: tests $((start+1))..$end"
 
-  # Build args: --tests pattern per test
   declare -a GRADLE_ARGS
   for (( i=start; i<end; i++ )); do
-    # Quote patterns exactly; Gradle interprets '.' and '*' as patterns normally
-    GRADLE_ARGS+=( "--tests" '${TESTS[i]}' )
+    GRADLE_ARGS+=( "--tests" "${TESTS[i]}" )
   done
 
-  # Execute
-  if ! "$GRADLE_CMD" $GRADLE_TASK "${GRADLE_ARGS[@]}" ${GRADLE_FLAGS:-}; then
+  # Pretty-print command with single quotes (for logs)
+  pretty_cmd="$GRADLE_CMD $GRADLE_TASK"
+  for (( i=0; i<${#GRADLE_ARGS[@]}; i+=2 )); do
+    # GRADLE_ARGS[i] is --tests; GRADLE_ARGS[i+1] is the pattern
+    pattern="${GRADLE_ARGS[i+1]}"
+    pretty_cmd+=" ${GRADLE_ARGS[i]} '${pattern}'"
+  done
+  [[ -n "${GRADLE_FLAGS:-}" ]] && pretty_cmd+=" ${GRADLE_FLAGS}"
+  echo "[selector] > $pretty_cmd"
+
+  # Safe execution (array preserves literals; $ not expanded)
+  if ! "$GRADLE_CMD" "$GRADLE_TASK" "${GRADLE_ARGS[@]}" ${GRADLE_FLAGS:-}; then
     echo "[selector] Chunk $chunk_index failed."
     failures=$((failures+1))
   fi
+
+  # If you truly need to force single quotes to reach Gradle (normally unnecessary),
+  # uncomment below (less safe due to eval):
+  # eval "$pretty_cmd"
+
   start=$end
   chunk_index=$((chunk_index+1))
 done
