@@ -62,6 +62,7 @@ async def select_tests_endpoint(req: SelectRequest):
                 changed_files=[cf.dict() for cf in req.changed_files],
                 call_graph=req.call_graph,
                 jdeps_graph=req.jdeps_graph,
+                allowed_tests=req.allowed_tests,
                 max_tests=req.settings.max_tests,
             )
         elif mode in ('remote','openai','openai-compatible'):

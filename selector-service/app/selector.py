@@ -7,19 +7,200 @@ which tests should be executed for a given change set.
 """
 from __future__ import annotations
 from typing import Dict, List, Tuple, Set, Any
+from collections import defaultdict, deque
 import logging
 
 logger = logging.getLogger("selector.core")
+
+
+class CallGraph:
+    """
+    Represents a call graph with efficient traversal capabilities.
+    """
+    
+    def __init__(self, call_graph_edges: List[Dict[str, str]]):
+        """Initialize the call graph from edge list."""
+        # Forward graph: who calls whom (caller -> callees)
+        self.forward: Dict[str, Set[str]] = defaultdict(set)
+        # Reverse graph: who is called by whom (callee -> callers)
+        self.reverse: Dict[str, Set[str]] = defaultdict(set)
+        
+        for edge in call_graph_edges:
+            caller = edge['caller']
+            callee = edge['callee']
+            
+            self.forward[caller].add(callee)
+            self.reverse[callee].add(caller)
+    
+    def get_callers(self, method: str) -> Set[str]:
+        """Get all methods that call the given method."""
+        return self.reverse.get(method, set())
+    
+    def get_callees(self, method: str) -> Set[str]:
+        """Get all methods that are called by the given method."""
+        return self.forward.get(method, set())
+    
+    def find_all_callers_bfs(self, start_methods: Set[str], max_depth: int = 10) -> Tuple[Set[str], Dict[str, int]]:
+        """
+        Find all methods that transitively call any of the start methods using BFS.
+        
+        Args:
+            start_methods: Set of methods to start traversal from
+            max_depth: Maximum traversal depth to prevent infinite loops
+            
+        Returns:
+            Tuple of (all_callers, depth_map) where:
+            - all_callers: All methods that can reach start_methods
+            - depth_map: Distance from each caller to nearest start method
+        """
+        visited = set()
+        depth_map = {}
+        queue = deque()
+        
+        # Initialize queue with start methods at depth 0
+        for method in start_methods:
+            if method not in visited:
+                visited.add(method)
+                depth_map[method] = 0
+                queue.append((method, 0))
+        
+        while queue:
+            current_method, current_depth = queue.popleft()
+            
+            if current_depth >= max_depth:
+                continue
+                
+            # Find all methods that call the current method
+            callers = self.get_callers(current_method)
+            
+            for caller in callers:
+                if caller not in visited:
+                    visited.add(caller)
+                    depth_map[caller] = current_depth + 1
+                    queue.append((caller, current_depth + 1))
+        
+        return visited, depth_map
+    
+    def is_test_method(self, method: str) -> bool:
+        """
+        Determine if a method is likely a test method based on naming conventions.
+        """
+        if not method or '#' not in method:
+            return False
+            
+        class_name, method_name = method.split('#', 1)
+        
+        # Check if class is a test class
+        if any(pattern in class_name.lower() for pattern in ['test', 'spec']):
+            return True
+            
+        # Check if method follows test naming conventions
+        if method_name.lower().startswith('test'):
+            return True
+            
+        return False
+
+
+def extract_touched_methods(changed_files: List[Dict[str, Any]]) -> Set[str]:
+    """
+    Extract all touched methods from changed files.
+    
+    Args:
+        changed_files: List of changed file objects with metadata
+        
+    Returns:
+        Set of fully qualified method names that were touched
+    """
+    touched_methods = set()
+    
+    for cf in changed_files:
+        # Get explicitly identified touched methods
+        for method in cf.get('touched_methods', []):
+            fqn = method.get('fqn')
+            if fqn:
+                touched_methods.add(fqn)
+        
+        # Also add class-level changes (constructors, static initializers, etc.)
+        fqc = cf.get('fully_qualified_class')
+        if fqc and cf.get('lang') == 'java':
+            # Add common constructor patterns
+            touched_methods.add(f"{fqc}#<init>")
+            touched_methods.add(f"{fqc}#{cf.get('class_name', '')}")
+    
+    return touched_methods
+
+
+def find_affected_tests(changed_files: List[Dict[str, Any]], 
+                       call_graph: List[Dict[str, str]],
+                       jdeps_graph: Dict[str, List[str]],
+                       allowed_tests: Set[str] = None) -> Tuple[Set[str], Dict[str, Any]]:
+    """
+    Find all test methods that are affected by the changed methods.
+    
+    Args:
+        changed_files: List of changed file objects with metadata
+        call_graph: Method-level call relationships
+        jdeps_graph: Class-level dependency relationships
+        allowed_tests: Set of allowed test methods to filter results
+        
+    Returns:
+        Tuple of (affected_tests, metadata) where:
+        - affected_tests: Set of test method identifiers that should be run
+        - metadata: Additional context about the analysis
+    """
+    # Extract touched methods from changed files
+    touched_methods = extract_touched_methods(changed_files)
+    logger.debug(f"Found {len(touched_methods)} touched methods: {list(touched_methods)[:10]}")
+    
+    if not touched_methods:
+        return set(), {'reason': 'no_touched_methods', 'touched_methods_count': 0}
+    
+    # Build call graph
+    graph = CallGraph(call_graph)
+    
+    # Find all methods that transitively call the touched methods
+    all_callers, depth_map = graph.find_all_callers_bfs(touched_methods, max_depth=15)
+    logger.debug(f"Found {len(all_callers)} methods in call chain")
+    
+    # Filter to only test methods
+    test_methods = {method for method in all_callers if graph.is_test_method(method)}
+    logger.debug(f"Found {len(test_methods)} test methods in call chain")
+    
+    # Filter against allowed tests if provided
+    if allowed_tests:
+        filtered_tests = test_methods.intersection(allowed_tests)
+        logger.debug(f"Filtered to {len(filtered_tests)} allowed test methods")
+        test_methods = filtered_tests
+    
+    metadata = {
+        'touched_methods_count': len(touched_methods),
+        'total_callers_count': len(all_callers),
+        'test_methods_count': len(test_methods),
+        'max_depth_used': max(depth_map.values()) if depth_map else 0,
+        'touched_methods_sample': list(touched_methods)[:10],
+        'depth_distribution': _calculate_depth_distribution(test_methods, depth_map)
+    }
+    
+    return test_methods, metadata
+
+
+def _calculate_depth_distribution(test_methods: Set[str], depth_map: Dict[str, int]) -> Dict[str, int]:
+    """Calculate distribution of test methods by their distance from changed methods."""
+    distribution = defaultdict(int)
+    for test_method in test_methods:
+        depth = depth_map.get(test_method, -1)
+        distribution[f"depth_{depth}"] += 1
+    return dict(distribution)
 
 
 def build_reachability(changed_files: List[Dict[str, Any]],
                        call_graph: List[Dict[str, str]],
                        jdeps_graph: Dict[str, List[str]]) -> Tuple[Set[str], List[Tuple[str, str]]]:
     """
-    Build reachability graph from changed files through dependency and call graphs.
+    Legacy function for building reachability graph.
     
-    This function identifies which methods and classes are potentially affected by
-    the given file changes by following dependency and call relationships.
+    This function is kept for backward compatibility but the new graph-based
+    approach in find_affected_tests() is preferred.
     
     Args:
         changed_files: List of changed file objects with metadata
@@ -31,91 +212,43 @@ def build_reachability(changed_files: List[Dict[str, Any]],
         - reached_methods: Set of method signatures that may be affected
         - reason_edges: List of (from, to) edges explaining the reachability
     """
-    # Identify changed classes/methods from file paths heuristically
-    # For Java files: convert .../java/com/foo/Bar.java -> com.foo.Bar
-    changed_classes: Set[str] = set()
-    for cf in changed_files:
-        # Prefer already computed fully qualified class if available
-        fqc = cf.get('fully_qualified_class')
-        if fqc:
-            changed_classes.add(fqc)
-        else:
-            p = cf.get('path','')
-            if '/src/main/java/' in p or '/src/test/java/' in p:
-                rel = p.split('/src/')[1]
-                try:
-                    pkg_path = rel.split('/java/')[1]
-                    cls = pkg_path.replace('/', '.').replace('.java','')
-                    changed_classes.add(cls)
-                except Exception:
-                    pass
-
-    # Build adjacency for call graph at method level
-    call_adj: Dict[str, Set[str]] = {}
-    for e in call_graph:
-        call_adj.setdefault(e['caller'], set()).add(e['callee'])
-
-    # Build class-level adjacency
-    class_adj: Dict[str, Set[str]] = {k: set(v) for k,v in jdeps_graph.items()}
-
-    # Propagate reachability: from changed classes to methods and classes
-    reached_methods: Set[str] = set()
-    reason_edges: List[Tuple[str,str]] = []
-
-    # From classes, mark all methods starting with Class# (unknown set)
-    # Here we just seed class names as pseudo-nodes and expand via call graph/class graph
-    frontier: List[str] = list(changed_classes)
-    # Also seed method-level nodes whose declaring class is among changed classes, so method call edges are discovered
-    for caller in list(call_adj.keys()):
-        cls_part = caller.split('#')[0]
-        if cls_part in changed_classes:
-            frontier.append(caller)
-    # Seed with touched methods if provided
-    for cf in changed_files:
-        for m in cf.get('touched_methods', []) or []:
-            fqn = m.get('fqn')
-            if fqn:
-                frontier.append(fqn)
-    visited: Set[str] = set()
-
-    while frontier:
-        cur = frontier.pop()
-        if cur in visited:
-            continue
-        visited.add(cur)
-        # If it's a class, expand class deps
-        if '#' not in cur:
-            for nxt in class_adj.get(cur, set()):
-                if nxt not in visited:
-                    frontier.append(nxt)
-                    reason_edges.append((cur, nxt))
-        # Expand call graph
-        for nxt in call_adj.get(cur, set()):
-            if nxt not in visited:
-                frontier.append(nxt)
-                reason_edges.append((cur, nxt))
-                if '#' in nxt:
-                    reached_methods.add(nxt)
-
-    return reached_methods, reason_edges
+    logger.warning("build_reachability is deprecated, use find_affected_tests instead")
+    
+    # Extract touched methods
+    touched_methods = extract_touched_methods(changed_files)
+    
+    # Use the new graph-based approach
+    graph = CallGraph(call_graph)
+    all_callers, _ = graph.find_all_callers_bfs(touched_methods)
+    
+    # Convert to old format for compatibility
+    reason_edges = []
+    for edge in call_graph:
+        if edge['caller'] in all_callers and edge['callee'] in all_callers:
+            reason_edges.append((edge['caller'], edge['callee']))
+    
+    return all_callers, reason_edges[:200]  # Limit edges for compatibility
 
 
 def select_tests(changed_files: List[Dict[str, Any]],
                  call_graph: List[Dict[str, str]],
                  jdeps_graph: Dict[str, List[str]],
+                 allowed_tests: List[str] = None,
                  max_tests: int = 500) -> Tuple[List[str], Dict[str,str], float, Dict[str, Any]]:
     """
-    Main test selection function using deterministic heuristics.
+    Main test selection function using graph-based analysis.
     
     This function implements the core selection algorithm that:
-    1. Builds reachability graphs from changes
-    2. Applies selection heuristics based on package proximity
-    3. Calculates confidence based on graph signals and change size
+    1. Extracts touched methods from changed files
+    2. Builds call graph and performs reverse traversal
+    3. Identifies test methods that transitively call changed methods
+    4. Calculates confidence based on graph coverage and change size
     
     Args:
         changed_files: List of changed file objects with metadata
         call_graph: Method-level call relationships
-        jdeps_graph: Class-level dependency relationships  
+        jdeps_graph: Class-level dependency relationships (legacy, kept for compatibility)
+        allowed_tests: List of allowed test identifiers (for filtering)
         max_tests: Maximum number of tests to select
         
     Returns:
@@ -129,54 +262,118 @@ def select_tests(changed_files: List[Dict[str, Any]],
         "select_tests: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, max_tests=%d",
         len(changed_files), len(call_graph), len(jdeps_graph), max_tests,
     )
-    reached_methods, reason_edges = build_reachability(changed_files, call_graph, jdeps_graph)
-    logger.debug(
-        "reachability: reached_methods=%d, reason_edges=%d",
-        len(reached_methods), len(reason_edges),
+    
+    # Convert allowed_tests to set for faster lookup
+    allowed_tests_set = set(allowed_tests) if allowed_tests else None
+    
+    # Use graph-based analysis to find affected tests
+    affected_tests, graph_metadata = find_affected_tests(
+        changed_files, call_graph, jdeps_graph, allowed_tests_set
     )
-
-    selected: List[str] = []
-    explanations: Dict[str,str] = {}
-
-    # With no explicit mapping, use a heuristic: select tests whose package matches changed classes' packages
-    changed_paths = [c['path'] for c in changed_files]
-    changed_pkgs = set()
-    for cf in changed_files:
-        p = cf.get('path','')
-        if '/src/' in p and '/java/' in p:
-            try:
-                pkg_path = p.split('/src/')[1].split('/java/')[1]
-                pkg = '.'.join(pkg_path.split('/')[:-1])
-                changed_pkgs.add(pkg)
-            except Exception:
-                pass
-    logger.debug("heuristic: changed_pkgs=%s", sorted(changed_pkgs))
-
-    # Note: This mock implementation returns empty selection by design.
-    # In practice, external LLM adapters or enhanced heuristics would populate the selection.
-    # The confidence reflects the quality of available graph signals.
-
-    selected = selected[:max_tests]
-
-    # Confidence: combine factors
-    num_changed_lines = sum((h['end'] - h['start'] + 1) for cf in changed_files for h in cf.get('hunks', [])) or 1
-    distance_factor = min(1.0, 0.8 if reason_edges else 0.4)
-    size_factor = max(0.3, min(1.0, 50.0 / num_changed_lines))
-    coverage_factor = 0.0
-    confidence = round(min(1.0, 0.6*distance_factor + 0.4*size_factor), 2)
+    
     logger.debug(
-        "confidence: num_changed_lines=%d, distance_factor=%.2f, size_factor=%.2f, coverage_factor=%.2f, final=%.2f",
-        num_changed_lines, distance_factor, size_factor, coverage_factor, confidence,
+        "graph_analysis: found %d affected tests from %d touched methods",
+        len(affected_tests), graph_metadata.get('touched_methods_count', 0)
     )
-
+    
+    # Convert to list and apply max_tests limit
+    selected_tests = list(affected_tests)[:max_tests]
+    
+    # Generate explanations for each selected test
+    explanations = {}
+    depth_dist = graph_metadata.get('depth_distribution', {})
+    
+    # Build call graph for explanation lookups
+    if call_graph:
+        graph = CallGraph(call_graph)
+        touched_methods = extract_touched_methods(changed_files)
+        
+        for test in selected_tests:
+            explanation = _generate_test_explanation(test, touched_methods, graph)
+            explanations[test] = explanation
+    
+    # Calculate confidence based on multiple factors
+    confidence = _calculate_confidence(changed_files, graph_metadata, len(selected_tests))
+    
+    # Prepare comprehensive metadata
     metadata = {
-        'reason_edges': [{'from': a, 'to': b} for a,b in reason_edges[:200]],
-        'changed_files': changed_paths,
+        'selection_method': 'graph_based_traversal',
+        'graph_analysis': graph_metadata,
+        'changed_files_paths': [cf.get('path', '') for cf in changed_files],
+        'reachability_stats': {
+            'total_affected_methods': graph_metadata.get('total_callers_count', 0),
+            'affected_tests': len(affected_tests),
+            'selected_tests': len(selected_tests),
+            'max_depth': graph_metadata.get('max_depth_used', 0)
+        }
     }
-
-    if selected:
-        logger.info("select_tests: returning %d tests, confidence=%.2f", len(selected), confidence)
-        logger.debug("selected sample: %s", selected[:10])
+    
+    if selected_tests:
+        logger.info("select_tests: returning %d tests (from %d affected), confidence=%.2f", 
+                   len(selected_tests), len(affected_tests), confidence)
+        logger.debug("selected sample: %s", selected_tests[:10])
     else:
         logger.info("select_tests: returning empty selection, confidence=%.2f", confidence)
-    return selected, explanations, confidence, metadata
+        
+    return selected_tests, explanations, confidence, metadata
+
+
+def _generate_test_explanation(test_method: str, touched_methods: Set[str], graph: CallGraph) -> str:
+    """
+    Generate human-readable explanation for why a test was selected.
+    """
+    # Find the shortest path from test to any touched method
+    # For simplicity, we'll do a basic explanation
+    if any(touched in graph.get_callees(test_method) for touched in touched_methods):
+        return f"Test directly calls changed methods"
+    
+    return f"Test transitively calls changed methods through call chain"
+
+
+def _calculate_confidence(changed_files: List[Dict[str, Any]], 
+                         graph_metadata: Dict[str, Any], 
+                         selected_count: int) -> float:
+    """
+    Calculate confidence score based on analysis quality and coverage.
+    """
+    # Factor 1: Graph coverage (did we find call relationships?)
+    touched_count = graph_metadata.get('touched_methods_count', 0)
+    if touched_count == 0:
+        return 0.1  # Very low confidence if no touched methods identified
+    
+    total_callers = graph_metadata.get('total_callers_count', 0)
+    coverage_factor = min(1.0, 0.7 if total_callers > 0 else 0.3)
+    
+    # Factor 2: Change size (smaller changes = higher confidence)
+    num_changed_lines = sum(
+        (h['end'] - h['start'] + 1) 
+        for cf in changed_files 
+        for h in cf.get('hunks', [])
+    ) or 1
+    size_factor = max(0.3, min(1.0, 50.0 / num_changed_lines))
+    
+    # Factor 3: Test selection count (moderate count = higher confidence)
+    if selected_count == 0:
+        selection_factor = 0.2
+    elif selected_count <= 10:
+        selection_factor = 1.0
+    elif selected_count <= 50:
+        selection_factor = 0.8
+    else:
+        selection_factor = 0.6
+    
+    # Factor 4: Max traversal depth (shallower = higher confidence)
+    max_depth = graph_metadata.get('max_depth_used', 0)
+    depth_factor = max(0.4, min(1.0, 1.0 - (max_depth * 0.1)))
+    
+    # Combine factors
+    confidence = (0.4 * coverage_factor + 
+                 0.25 * size_factor + 
+                 0.2 * selection_factor + 
+                 0.15 * depth_factor)
+    
+    # Ensure minimum confidence for graph-based selections
+    if selected_count > 0 and total_callers > 0:
+        confidence = max(confidence, 0.5)
+    
+    return round(min(1.0, confidence), 2)
