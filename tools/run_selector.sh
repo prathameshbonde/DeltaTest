@@ -80,187 +80,9 @@ fi
 # Assemble input JSON
 debug "Assembling input_for_llm.json"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY - << 'PY'
-import json, os, re
-from pathlib import Path
-
-def build_allowed_tests(root: str):
-  tests = []
-  root_path = Path(root or '.')
-  for p in root_path.rglob('src/test/java/**/*.java'):
-    try:
-      text = p.read_text(encoding='utf-8', errors='ignore')
-    except Exception:
-      continue
-    pkg = None
-    m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', text, re.MULTILINE)
-    if m:
-      pkg = m.group(1)
-    lines = text.splitlines()
-    brace = 0
-    pending_class = None
-    class_stack = []
-    class_brace_levels = []
-    pending_test_annot = False
-    # Patterns
-    class_re = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?class\s+([A-Za-z_][\w$]*)\b')
-    method_header = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?[\w\[\].<>]+\s+([A-Za-z_][\w$]*)\s*\([^)]*\)')
-    for line in lines:
-      # track annotations
-      if '@Test' in line or '@org.junit.Test' in line or '@ParameterizedTest' in line or '@RepeatedTest' in line:
-        pending_test_annot = True
-      cm = class_re.match(line)
-      if cm:
-        pending_class = cm.group(1)
-        # class body may open on same line
-        if '{' in line:
-          brace += line.count('{') - line.count('}')
-          class_stack.append(pending_class)
-          class_brace_levels.append(brace)
-          pending_class = None
-          continue
-      # method detection
-      mm = method_header.match(line)
-      if mm and class_stack:
-        name = mm.group(1)
-        is_junit4 = name.startswith('test')
-        if pending_test_annot or is_junit4:
-          cls = '$'.join(class_stack)
-          fqc = (pkg + '.' if pkg else '') + cls
-          tests.append(f"{fqc}#{name}")
-        pending_test_annot = False
-      # brace tracking and class pushes/pops
-      if pending_class and '{' in line:
-        # handled above, but keep for robustness
-        pass
-      if '{' in line or '}' in line:
-        opens = line.count('{')
-        closes = line.count('}')
-        # If we saw a class header earlier and encounter first '{', push class
-        if pending_class and opens > 0:
-          brace += opens
-          class_stack.append(pending_class)
-          class_brace_levels.append(brace)
-          pending_class = None
-          # consume remaining braces for this line
-          if closes:
-            brace -= closes
-        else:
-          brace += opens
-          brace -= closes
-        # Pop classes whose scope ended
-        while class_brace_levels and brace < class_brace_levels[-1]:
-          class_brace_levels.pop()
-          class_stack.pop()
-    # end for lines
-  return sorted(set(tests))
-
-allowed = build_allowed_tests(os.environ.get('PROJECT_ROOT') or '.')
-out = {
-  "repo": {
-    "name": os.path.basename(os.getcwd()),
-    "base_commit": os.environ.get('BASE_REF','origin/main'),
-    "head_commit": os.environ.get('HEAD_REF','HEAD'),
-  },
-  "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
-  "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
-  "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
-  "allowed_tests": allowed,
-  "settings": {
-    "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
-    "max_tests": 500
-  }
-}
-with open('tools/output/input_for_llm.json','w') as f:
-  json.dump(out, f, indent=2)
-print('Wrote tools/output/input_for_llm.json')
-PY
+  $PY tools/python_scripts/build_input.py
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 - << 'PY'
-import json, os, re
-from pathlib import Path
-
-def build_allowed_tests(root: str):
-  tests = []
-  root_path = Path(root or '.')
-  for p in root_path.rglob('src/test/java/**/*.java'):
-    try:
-      text = p.read_text(encoding='utf-8', errors='ignore')
-    except Exception:
-      continue
-    pkg = None
-    m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', text, re.MULTILINE)
-    if m:
-      pkg = m.group(1)
-    lines = text.splitlines()
-    brace = 0
-    pending_class = None
-    class_stack = []
-    class_brace_levels = []
-    pending_test_annot = False
-    class_re = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?class\s+([A-Za-z_][\w$]*)\b')
-    method_header = re.compile(r'^\s*(?:@[\w.$]+(?:\([^)]*\))?\s*)*(?:public|protected|private)?\s*(?:static\s+)?[\w\[\].<>]+\s+([A-Za-z_][\w$]*)\s*\([^)]*\)')
-    for line in lines:
-      if '@Test' in line or '@org.junit.Test' in line or '@ParameterizedTest' in line or '@RepeatedTest' in line:
-        pending_test_annot = True
-      cm = class_re.match(line)
-      if cm:
-        pending_class = cm.group(1)
-        if '{' in line:
-          brace += line.count('{') - line.count('}')
-          class_stack.append(pending_class)
-          class_brace_levels.append(brace)
-          pending_class = None
-          continue
-      mm = method_header.match(line)
-      if mm and class_stack:
-        name = mm.group(1)
-        is_junit4 = name.startswith('test')
-        if pending_test_annot or is_junit4:
-          cls = '$'.join(class_stack)
-          fqc = (pkg + '.' if pkg else '') + cls
-          tests.append(f"{fqc}#{name}")
-        pending_test_annot = False
-      if pending_class and '{' in line:
-        pass
-      if '{' in line or '}' in line:
-        opens = line.count('{')
-        closes = line.count('}')
-        if pending_class and opens > 0:
-          brace += opens
-          class_stack.append(pending_class)
-          class_brace_levels.append(brace)
-          pending_class = None
-          if closes:
-            brace -= closes
-        else:
-          brace += opens
-          brace -= closes
-        while class_brace_levels and brace < class_brace_levels[-1]:
-          class_brace_levels.pop()
-          class_stack.pop()
-  return sorted(set(tests))
-
-allowed = build_allowed_tests(os.environ.get('PROJECT_ROOT') or '.')
-out = {
-  "repo": {
-    "name": os.path.basename(os.getcwd()),
-    "base_commit": os.environ.get('BASE_REF','origin/main'),
-    "head_commit": os.environ.get('HEAD_REF','HEAD'),
-  },
-  "changed_files": json.load(open('tools/output/changed_files.json')) if os.path.exists('tools/output/changed_files.json') else [],
-  "jdeps_graph": json.load(open('tools/output/jdeps_graph.json')) if os.path.exists('tools/output/jdeps_graph.json') else {},
-  "call_graph": json.load(open('tools/output/call_graph.json')) if os.path.exists('tools/output/call_graph.json') else [],
-  "allowed_tests": allowed,
-  "settings": {
-    "confidence_threshold": float(os.environ.get('CONFIDENCE_THRESHOLD','0.6')),
-    "max_tests": 500
-  }
-}
-with open('tools/output/input_for_llm.json','w') as f:
-  json.dump(out, f, indent=2)
-print('Wrote tools/output/input_for_llm.json')
-PY
+  py -3 tools/python_scripts/build_input.py
 else
   echo "Skipping input assembly due to missing Python."
 fi
@@ -270,36 +92,9 @@ info "Calling selector service: $SELECTOR_URL"
 
 # Call FastAPI
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY - "$SELECTOR_URL" << 'PY'
-import json, sys, urllib.request
-url = sys.argv[1]
-try:
-    req = urllib.request.Request(url, data=open('tools/output/input_for_llm.json','rb').read(), headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
-    open('selector_output.json','w').write(json.dumps(data, indent=2))
-    print('Wrote selector_output.json')
-except Exception as e:
-    # Fallback to empty selection
-    fallback = {"selected_tests": [], "confidence": 0.0, "reason": f"service_error:{e.__class__.__name__}"}
-    open('selector_output.json','w').write(json.dumps(fallback, indent=2))
-    print('Selector service unavailable; wrote empty selection to selector_output.json', file=sys.stderr)
-PY
+  $PY tools/python_scripts/call_service.py "$SELECTOR_URL"
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 - "$SELECTOR_URL" << 'PY'
-import json, sys, urllib.request
-url = sys.argv[1]
-try:
-    req = urllib.request.Request(url, data=open('tools/output/input_for_llm.json','rb').read(), headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
-    open('selector_output.json','w').write(json.dumps(data, indent=2))
-    print('Wrote selector_output.json')
-except Exception as e:
-    fallback = {"selected_tests": [], "confidence": 0.0, "reason": f"service_error:{e.__class__.__name__}"}
-    open('selector_output.json','w').write(json.dumps(fallback, indent=2))
-    print('Selector service unavailable; wrote empty selection to selector_output.json', file=sys.stderr)
-PY
+  py -3 tools/python_scripts/call_service.py "$SELECTOR_URL"
 else
   warn "Skipping selector service call due to missing Python; no tests will be selected."
   echo '{"selected_tests":[],"confidence":0.0,"reason":"python-missing"}' > selector_output.json
@@ -307,31 +102,9 @@ fi
 
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
   # Enforce allowed_tests filter to prevent hallucinated selections
-  $PY - << 'PY'
-import json
-inp = json.load(open('tools/output/input_for_llm.json'))
-allowed = set(inp.get('allowed_tests') or [])
-sel = json.load(open('selector_output.json'))
-selected = [t for t in sel.get('selected_tests', []) if (not allowed) or (t in allowed)]
-ex = {k:v for k,v in (sel.get('explanations') or {}).items() if k in selected}
-sel['selected_tests'] = selected
-sel['explanations'] = ex
-open('selector_output.json','w').write(json.dumps(sel, indent=2))
-print('Filtered selector_output.json against allowed_tests')
-PY
+  $PY tools/python_scripts/filter_results.py
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 - << 'PY'
-import json
-inp = json.load(open('tools/output/input_for_llm.json'))
-allowed = set(inp.get('allowed_tests') or [])
-sel = json.load(open('selector_output.json'))
-selected = [t for t in sel.get('selected_tests', []) if (not allowed) or (t in allowed)]
-ex = {k:v for k,v in (sel.get('explanations') or {}).items() if k in selected}
-sel['selected_tests'] = selected
-sel['explanations'] = ex
-open('selector_output.json','w').write(json.dumps(sel, indent=2))
-print('Filtered selector_output.json against allowed_tests')
-PY
+  py -3 tools/python_scripts/filter_results.py
 fi
  
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
@@ -380,145 +153,9 @@ fi
 # Build Gradle task-qualified --tests arguments
 debug "Building Gradle test args from selector output (module-qualified)"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY - << 'PY'
-import json, os, re
-from pathlib import Path
-
-ROOT = Path(os.environ.get('PROJECT_ROOT') or '.')
-
-def nearest_gradle_module_dir(file_path: Path) -> Path | None:
-  cur = file_path.parent
-  while True:
-    if (cur / 'build.gradle').exists() or (cur / 'build.gradle.kts').exists():
-      return cur
-    if cur == cur.parent:
-      return None
-    cur = cur.parent
-
-def gradle_task_for_module(module_dir: Path) -> str:
-  rel = os.path.relpath(module_dir, ROOT)
-  if rel == '.' or rel == '' or rel.startswith('..'):
-    return 'test'
-  # Convert path segments to gradle path (e.g., services/foo -> :services:foo:test)
-  segs = [s for s in rel.replace('\\', '/').split('/') if s and s != '.']
-  return ':' + ':'.join(segs) + ':test'
-
-def find_source_for_class(fqc: str) -> Path | None:
-  # Support inner classes by using the top-level class for file name
-  top = fqc.split('$', 1)[0]
-  pkg, cls = (top.rsplit('.', 1) + [''])[:2]
-  if not cls:
-    return None
-  pkg_path = pkg.replace('.', '/') if pkg else ''
-  patterns = []
-  if pkg_path:
-    patterns.append(f"**/src/test/java/{pkg_path}/{cls}.java")
-  else:
-    patterns.append(f"**/src/test/java/{cls}.java")
-  # Fallback: search anywhere under src/test/java for the class file
-  patterns.append(f"**/src/test/java/**/{cls}.java")
-  for pat in patterns:
-    for p in ROOT.glob(pat):
-      try:
-        txt = p.read_text(encoding='utf-8', errors='ignore')
-      except Exception:
-        continue
-      # Verify package matches when known
-      m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', txt, re.MULTILINE)
-      file_pkg = m.group(1) if m else ''
-      if pkg and file_pkg != pkg:
-        continue
-      return p
-  return None
-
-sel = json.load(open('selector_output.json'))
-selected = sel.get('selected_tests', [])
-
-lines: list[str] = []
-for t in selected:
-  try:
-    cls, meth = t.split('#', 1)
-  except ValueError:
-    # Skip invalid entries
-    continue
-  src = find_source_for_class(cls)
-  task = 'test'
-  if src is not None:
-    mod_dir = nearest_gradle_module_dir(src)
-    if mod_dir is not None:
-      task = gradle_task_for_module(mod_dir)
-  lines.append(f"{task} --tests {cls}.{meth}")
-
-out_path = Path('tools/output/gradle_args.txt')
-out_path.write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
-print('Wrote tools/output/gradle_args.txt')
-PY
+  $PY tools/python_scripts/build_gradle_args.py
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 - << 'PY'
-import json, os, re
-from pathlib import Path
-
-ROOT = Path(os.environ.get('PROJECT_ROOT') or '.')
-
-def nearest_gradle_module_dir(file_path: Path):
-  cur = file_path.parent
-  while True:
-    if (cur / 'build.gradle').exists() or (cur / 'build.gradle.kts').exists():
-      return cur
-    if cur == cur.parent:
-      return None
-    cur = cur.parent
-
-def gradle_task_for_module(module_dir: Path) -> str:
-  rel = os.path.relpath(module_dir, ROOT)
-  if rel == '.' or rel == '' or rel.startswith('..'):
-    return 'test'
-  segs = [s for s in rel.replace('\\\\', '/').split('/') if s and s != '.']
-  return ':' + ':'.join(segs) + ':test'
-
-def find_source_for_class(fqc: str):
-  top = fqc.split('$', 1)[0]
-  parts = top.rsplit('.', 1)
-  pkg = parts[0] if len(parts) == 2 else ''
-  cls = parts[1] if len(parts) == 2 else parts[0]
-  pkg_path = pkg.replace('.', '/') if pkg else ''
-  patterns = []
-  if pkg_path:
-    patterns.append(f"**/src/test/java/{pkg_path}/{cls}.java")
-  else:
-    patterns.append(f"**/src/test/java/{cls}.java")
-  patterns.append(f"**/src/test/java/**/{cls}.java")
-  for pat in patterns:
-    for p in ROOT.glob(pat):
-      try:
-        txt = p.read_text(encoding='utf-8', errors='ignore')
-      except Exception:
-        continue
-      m = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', txt, re.MULTILINE)
-      file_pkg = m.group(1) if m else ''
-      if pkg and file_pkg != pkg:
-        continue
-      return p
-  return None
-
-sel = json.load(open('selector_output.json'))
-selected = sel.get('selected_tests', [])
-lines = []
-for t in selected:
-  if '#' not in t:
-    continue
-  cls, meth = t.split('#', 1)
-  src = find_source_for_class(cls)
-  task = 'test'
-  if src is not None:
-    mod_dir = nearest_gradle_module_dir(src)
-    if mod_dir is not None:
-      task = gradle_task_for_module(mod_dir)
-  lines.append(f"{task} --tests {cls}.{meth}")
-
-Path('tools/output/gradle_args.txt').write_text('\n'.join(lines) + ('\n' if lines else ''), encoding='utf-8')
-print('Wrote tools/output/gradle_args.txt')
-PY
+  py -3 tools/python_scripts/build_gradle_args.py
 else
   echo "" > tools/output/gradle_args.txt
 fi
@@ -534,13 +171,3 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-# if [ -f "gradlew" ]; then
-#   info "Running Gradle tests via ./gradlew"
-#   ./gradlew test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-# elif [ -f "gradlew.bat" ]; then
-#   info "Running Gradle tests via gradlew.bat"
-#   ./gradlew.bat test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-# else
-#   info "Running Gradle tests via system Gradle"
-#   gradle test $ARGS ${EXTRA_GRADLE_ARGS:-} --no-daemon
-# fi

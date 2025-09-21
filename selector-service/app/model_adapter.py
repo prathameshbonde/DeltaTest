@@ -10,7 +10,7 @@ import json
 import re
 import logging
 from typing import Dict, Any, List, Tuple, Optional
-
+import tiktoken
 import requests
 
 
@@ -263,11 +263,33 @@ class GeminiAdapter(ExternalLLMAdapter):
         self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
         self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
 
+    def _estimate_token_count(self, text: str) -> int:
+        """
+        Estimate token count for the given text.
+        Uses tiktoken with cl100k_base encoding as approximation for Gemini.
+        """
+        try:
+            # Use OpenAI's tokenizer as approximation since Gemini doesn't provide exact tokenizer
+            encoding = tiktoken.get_encoding("cl100k_base")
+            return len(encoding.encode(text))
+        except Exception:
+            # Fallback: rough estimate of 4 characters per token
+            return len(text) // 4
+    
     def select(self, payload: Dict[str, Any]):
         if not self.api_key:
             raise RuntimeError('GeminiAdapter not configured: set GEMINI_API_KEY')
         sys_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(payload)
+
+        # Calculate token estimates
+        sys_tokens = self._estimate_token_count(sys_prompt)
+        user_tokens = self._estimate_token_count(user_prompt)
+        total_tokens = sys_tokens + user_tokens
+        
+        logger.info("GeminiAdapter token estimate: system=%d, user=%d, total=%d", 
+                   sys_tokens, user_tokens, total_tokens)
+
         url = f'https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}'
         body = {
             'systemInstruction': { 'role':'system', 'parts': [{'text': sys_prompt}] },

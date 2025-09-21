@@ -64,49 +64,9 @@ else
 fi
 
 if [[ "$PY" == "py -3" ]]; then
-  py -3 - "$TMP" "$OUT" << 'PY'
-import json, re, sys
-jdeps_out, out_path = sys.argv[1], sys.argv[2]
-
-deps = {}
-line_re = re.compile(r'\s*([\w.$]+)\s*->\s*([\w.$]+)')
-with open(jdeps_out, 'r', encoding='utf-8', errors='ignore') as f:
-    for line in f:
-        m = line_re.match(line)
-        if not m:
-            continue
-        src, dst = m.group(1), m.group(2)
-        if src == dst:
-            continue
-        deps.setdefault(src, set()).add(dst)
-
-as_json = {k: sorted(v) for k,v in deps.items()}
-with open(out_path,'w') as out:
-    json.dump(as_json, out, indent=2)
-print(f"Wrote {out_path}")
-PY
+  py -3 tools/python_scripts/process_jdeps_output.py "$TMP" "$OUT"
 else
-  $PY - "$TMP" "$OUT" << 'PY'
-import json, re, sys
-jdeps_out, out_path = sys.argv[1], sys.argv[2]
-
-deps = {}
-line_re = re.compile(r'\s*([\w.$]+)\s*->\s*([\w.$]+)')
-with open(jdeps_out, 'r', encoding='utf-8', errors='ignore') as f:
-    for line in f:
-        m = line_re.match(line)
-        if not m:
-            continue
-        src, dst = m.group(1), m.group(2)
-        if src == dst:
-            continue
-        deps.setdefault(src, set()).add(dst)
-
-as_json = {k: sorted(v) for k,v in deps.items()}
-with open(out_path,'w') as out:
-    json.dump(as_json, out, indent=2)
-print(f"Wrote {out_path}")
-PY
+  $PY tools/python_scripts/process_jdeps_output.py "$TMP" "$OUT"
 fi
 
 exit 0

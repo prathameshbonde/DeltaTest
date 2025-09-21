@@ -55,8 +55,6 @@ if { ! command -v "$JAVAP" >/dev/null 2>&1; } && [[ ! -x "$JAVAP" ]]; then
   echo "javap not found; emitting empty call graph" > "$TMP"
   log WARN "javap not found; writing empty call graph"
 else
-  log INFO "Using javap at: ${JAVAP}"
-  ("$JAVAP" -version 2>&1 || true) | while read -r line; do log INFO "javap: $line"; done
   for cf in "${class_files[@]}"; do
   # Derive FQCN assuming Gradle class layout (java|kotlin)/(main|test)
   fqcn=$(echo "$cf" | sed -E 's#.*build/classes/(java|kotlin)/(main|test)/##; s#/#.#g; s#\.class$##')
@@ -128,41 +126,9 @@ else
 fi
 
 if [[ "$PY" == "py -3" ]]; then
-  py -3 - "$TMP" "$OUT" << 'PY'
-import json, sys
-inp, outp = sys.argv[1], sys.argv[2]
-edges = []
-with open(inp,'r') as f:
-    for line in f:
-        line = line.strip()
-        if not line or '->' not in line:
-            continue
-        caller, callee = [x.strip() for x in line.split('->',1)]
-        # Normalize stray '#?'
-        caller = caller.replace('#?', '')
-        edges.append({"caller": caller, "callee": callee})
-with open(outp,'w') as out:
-    json.dump(edges, out, indent=2)
-print(f"Wrote {outp}")
-PY
+  py -3 tools/python_scripts/process_call_graph.py "$TMP" "$OUT"
 else
-  $PY - "$TMP" "$OUT" << 'PY'
-import json, sys
-inp, outp = sys.argv[1], sys.argv[2]
-edges = []
-with open(inp,'r') as f:
-    for line in f:
-        line = line.strip()
-        if not line or '->' not in line:
-            continue
-        caller, callee = [x.strip() for x in line.split('->',1)]
-        # Normalize stray '#?'
-        caller = caller.replace('#?', '')
-        edges.append({"caller": caller, "callee": callee})
-with open(outp,'w') as out:
-    json.dump(edges, out, indent=2)
-print(f"Wrote {outp}")
-PY
+  $PY tools/python_scripts/process_call_graph.py "$TMP" "$OUT"
 fi
 
 exit 0
