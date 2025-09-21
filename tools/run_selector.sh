@@ -108,7 +108,7 @@ elif [[ "$PY" == "py -3" ]]; then
 fi
  
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  CONF=$($PY -c "import json;print(json.load(open('selector_output.json'))['confidence'])")
+  CONF=$("$PY" -c "import json;print(json.load(open('selector_output.json'))['confidence'])")
 elif [[ "$PY" == "py -3" ]]; then
   CONF=$(py -3 -c "import json;print(json.load(open('selector_output.json'))['confidence'])")
 else
@@ -120,7 +120,7 @@ debug "Confidence from selector=$CONF threshold=$THRESH"
 if [[ $DRY_RUN -eq 1 ]]; then
   info "Dry-run: skipping confidence threshold check."
 elif [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  if $PY - <<PY
+  if "$PY" - <<PY
 c=$CONF
 th=$THRESH
 import sys
