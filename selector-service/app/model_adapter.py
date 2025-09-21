@@ -12,9 +12,64 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 import tiktoken
 import requests
+from pathlib import Path
 
 
 logger = logging.getLogger("selector.adapters")
+
+
+def load_system_prompt(prompt_file: Optional[str] = None) -> str:
+    """
+    Load system prompt from a Markdown file.
+    
+    Args:
+        prompt_file: Path to the prompt file. If None, uses default system_prompt.md
+        
+    Returns:
+        System prompt as a string
+    """
+    if prompt_file is None:
+        # Default prompt file location
+        current_dir = Path(__file__).parent
+        prompt_file = current_dir.parent / "prompts" / "system_prompt.md"
+    
+    try:
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            
+        # Remove markdown headers and format for use as system prompt
+        # Convert markdown to plain text for LLM consumption
+        lines = []
+        for line in content.split('\n'):
+            # Remove markdown headers
+            if line.startswith('#'):
+                line = line.lstrip('# ').strip()
+                if line:
+                    lines.append(line)
+            # Remove code block markers for JSON schema, but keep the content
+            elif line.strip() in ['```json', '```']:
+                continue
+            else:
+                lines.append(line)
+        
+        result = '\n'.join(lines).strip()
+        logger.debug("Loaded system prompt from %s (%d chars)", prompt_file, len(result))
+        return result
+        
+    except Exception as e:
+        logger.warning("Failed to load system prompt from %s: %s", prompt_file, e)
+        # Fallback to hardcoded prompt
+        return (
+            "You are an expert build/CI assistant that selects the minimal yet sufficient set of JUnit tests "
+            "to run for a given code change in a large Java Gradle monorepo. "
+            "Use only the provided structured inputs (changed files with hunks and dependency graphs). "
+            "You will be given both a brief summary and the FULL JSON for changed_files, jdeps_graph, and call_graph. "
+            "Favor precision and recall trade-offs that keep runtime low while maintaining correctness. "
+            "Always respond with a strict JSON object matching this schema: "
+            "{\n  \"selected_tests\": string[],\n  \"explanations\": { [test: string]: string },\n  \"confidence\": number,\n  \"metadata\": object\n}. "
+            "selected_tests must contain fully qualified test method names in the form Class#method (no spaces). "
+            "confidence is a float in [0,1]. Explanations should be short, evidence-based, and reference inputs."
+        )
 
 
 class MockLLM:
@@ -58,15 +113,20 @@ class ExternalLLMAdapter:
     - LLM_MODEL: Model name (e.g., gpt-4o-mini, gpt-4o, gpt-4.1-mini, etc.). Default: gpt-4o-mini
     - LLM_TEMPERATURE: Sampling temperature (default 0.2)
     - LLM_MAX_TOKENS: Max tokens for response (default 800)
+    - LLM_PROMPT_FILE: Path to custom system prompt file (optional, defaults to prompts/system_prompt.md)
     """
 
-    def __init__(self, endpoint: Optional[str] = None, api_key_env: str = 'LLM_API_KEY'):
+    def __init__(self, endpoint: Optional[str] = None, api_key_env: str = 'LLM_API_KEY', prompt_file: Optional[str] = None):
         default_endpoint = 'https://api.openai.com/v1/chat/completions'
         self.endpoint = (endpoint or os.environ.get('LLM_ENDPOINT') or default_endpoint).strip()
         self.api_key = os.environ.get(api_key_env, '').strip()
         self.model = os.environ.get('LLM_MODEL', 'gpt-4o-mini').strip()
         self.temperature = float(os.environ.get('LLM_TEMPERATURE', '0.2'))
         self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS', '800'))
+        
+        # Load system prompt from file or environment variable
+        self.prompt_file = prompt_file or os.environ.get('LLM_PROMPT_FILE')
+        self._system_prompt = None  # Cache the loaded prompt
 
     def select(self, payload: Dict[str, Any]):
         if not self.api_key:
@@ -127,17 +187,15 @@ class ExternalLLMAdapter:
 
     # ----- prompt builders -----
     def _build_system_prompt(self) -> str:
-        return (
-            "You are an expert build/CI assistant that selects the minimal yet sufficient set of JUnit tests "
-            "to run for a given code change in a large Java Gradle monorepo. "
-            "Use only the provided structured inputs (changed files with hunks and dependency graphs). "
-            "You will be given both a brief summary and the FULL JSON for changed_files, jdeps_graph, and call_graph. "
-            "Favor precision and recall trade-offs that keep runtime low while maintaining correctness. "
-            "Always respond with a strict JSON object matching this schema: "
-            "{\n  \"selected_tests\": string[],\n  \"explanations\": { [test: string]: string },\n  \"confidence\": number,\n  \"metadata\": object\n}. "
-            "selected_tests must contain fully qualified test method names in the form Class#method (no spaces). "
-            "confidence is a float in [0,1]. Explanations should be short, evidence-based, and reference inputs."
-        )
+        """
+        Build the system prompt, loading from file if configured.
+        
+        Returns:
+            System prompt string
+        """
+        if self._system_prompt is None:
+            self._system_prompt = load_system_prompt(self.prompt_file)
+        return self._system_prompt
 
     def _build_user_prompt(self, payload: Dict[str, Any]) -> str:
         repo = payload.get('repo', {})
@@ -257,11 +315,15 @@ class ExternalLLMAdapter:
 
 
 class GeminiAdapter(ExternalLLMAdapter):
-    def __init__(self):
+    def __init__(self, prompt_file: Optional[str] = None):
         self.api_key = os.environ.get('GEMINI_API_KEY','')
         self.model = os.environ.get('GEMINI_MODEL','gemini-1.5-pro')
         self.temperature = float(os.environ.get('LLM_TEMPERATURE','0.2'))
         self.max_tokens = int(os.environ.get('LLM_MAX_TOKENS','800'))
+        
+        # Load system prompt from file or environment variable
+        self.prompt_file = prompt_file or os.environ.get('LLM_PROMPT_FILE')
+        self._system_prompt = None  # Cache the loaded prompt
 
     def _estimate_token_count(self, text: str) -> int:
         """

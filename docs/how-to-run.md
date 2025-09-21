@@ -61,6 +61,7 @@ Environment variables:
 - **LLM_API_KEY**: API key for external LLM providers
 - **LLM_ENDPOINT**: Custom endpoint for OpenAI-compatible APIs
 - **LLM_MODEL**: Model name (e.g., gpt-4o-mini)
+- **LLM_PROMPT_FILE**: Path to custom system prompt file (optional, defaults to prompts/system_prompt.md)
 - **GEMINI_API_KEY**: Google Gemini API key
 - **GEMINI_MODEL**: Gemini model name (default: gemini-1.5-pro)
 - **CONFIDENCE_THRESHOLD**: 0.6 (default)
@@ -83,5 +84,22 @@ export LLM_API_KEY=your_api_key_here
 ```
 
 The hybrid approach typically provides higher confidence scores when both selectors agree on tests, and comprehensive coverage when they complement each other.
+
+## Custom System Prompts
+
+You can customize the LLM system prompt by providing your own Markdown file:
+
+1. **Default**: The service uses `selector-service/prompts/system_prompt.md`
+2. **Custom file**: Set `LLM_PROMPT_FILE` environment variable to your custom prompt file path
+3. **Fallback**: If the file cannot be loaded, falls back to a hardcoded prompt
+
+Example custom prompt usage:
+```bash
+export LLM_PROMPT_FILE=/path/to/my/custom_prompt.md
+export LLM_MODE=openai
+export LLM_API_KEY=your_api_key
+```
+
+The prompt file should contain clear instructions for test selection in Markdown format. The system will automatically convert it to plain text for LLM consumption.
 
 CI examples are in the README.md and Jenkinsfile.
