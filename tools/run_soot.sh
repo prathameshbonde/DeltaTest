@@ -19,7 +19,7 @@ warn() { log WARN "$1"; }
 # Output: JSON array of {caller, callee} method relationships
 
 ROOT=${1:-.}
-OUT=${2:-tools/output/call_graph.json}
+OUT=${2:-"tools/output/call_graph.json"}
 mkdir -p "$(dirname "$OUT")"
 
 mapfile -t class_files < <(find "$ROOT" -type f \
@@ -126,9 +126,9 @@ else
 fi
 
 if [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/process_call_graph.py "$TMP" "$OUT"
+  py -3 "tools/python_scripts/process_call_graph.py" "$TMP" "$OUT"
 else
-  $PY tools/python_scripts/process_call_graph.py "$TMP" "$OUT"
+  "$PY" "tools/python_scripts/process_call_graph.py" "$TMP" "$OUT"
 fi
 
 exit 0

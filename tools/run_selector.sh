@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p tools/output
+mkdir -p "tools/output"
 info "Starting selector orchestration (project_root=$PROJECT_ROOT base=$BASE_REF head=$HEAD_REF dry_run=$DRY_RUN)"
 
 # Export variables for child scripts
@@ -51,15 +51,15 @@ export PROJECT_ROOT
 
 # Step 1: Analyze changed files and extract Java metadata
 info "Computing changed files"
-bash tools/compute_changed_files.sh "$BASE_REF" "$HEAD_REF" tools/output/changed_files.json "$PROJECT_ROOT"
+bash "tools/compute_changed_files.sh" "$BASE_REF" "$HEAD_REF" "tools/output/changed_files.json" "$PROJECT_ROOT"
 
 # Step 2: Build class-level dependency graph (best-effort, may fail if no compiled classes)
 info "Building jdeps graph (best-effort)"
-bash tools/run_jdeps.sh "$PROJECT_ROOT" tools/output/jdeps_graph.json || true
+bash "tools/run_jdeps.sh" "$PROJECT_ROOT" "tools/output/jdeps_graph.json" || true
 
 # Step 3: Build method-level call graph (best-effort, may fail if no compiled classes)
 info "Building call graph (best-effort)"
-bash tools/run_soot.sh "$PROJECT_ROOT" tools/output/call_graph.json || true
+bash "tools/run_soot.sh" "$PROJECT_ROOT" "tools/output/call_graph.json" || true
 
 # Resolve Python executable (Windows-friendly)
 # Try common Python installation patterns
@@ -80,9 +80,9 @@ fi
 # Assemble input JSON
 debug "Assembling input_for_llm.json"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY tools/python_scripts/build_input.py
+  "$PY" "tools/python_scripts/build_input.py"
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/build_input.py
+  py -3 "tools/python_scripts/build_input.py"
 else
   echo "Skipping input assembly due to missing Python."
 fi
@@ -92,9 +92,9 @@ info "Calling selector service: $SELECTOR_URL"
 
 # Call FastAPI
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY tools/python_scripts/call_service.py "$SELECTOR_URL"
+  "$PY" "tools/python_scripts/call_service.py" "$SELECTOR_URL"
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/call_service.py "$SELECTOR_URL"
+  py -3 "tools/python_scripts/call_service.py" "$SELECTOR_URL"
 else
   warn "Skipping selector service call due to missing Python; no tests will be selected."
   echo '{"selected_tests":[],"confidence":0.0,"reason":"python-missing"}' > selector_output.json
@@ -102,9 +102,9 @@ fi
 
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
   # Enforce allowed_tests filter to prevent hallucinated selections
-  $PY tools/python_scripts/filter_results.py
+  "$PY" "tools/python_scripts/filter_results.py"
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/filter_results.py
+  py -3 "tools/python_scripts/filter_results.py"
 fi
  
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
@@ -153,14 +153,14 @@ fi
 # Build Gradle task-qualified --tests arguments
 debug "Building Gradle test args from selector output (module-qualified)"
 if [[ -n "$PY" && "$PY" != "py -3" ]]; then
-  $PY tools/python_scripts/build_gradle_args.py
+  "$PY" "tools/python_scripts/build_gradle_args.py"
 elif [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/build_gradle_args.py
+  py -3 "tools/python_scripts/build_gradle_args.py"
 else
-  echo "" > tools/output/gradle_args.txt
+  echo "" > "tools/output/gradle_args.txt"
 fi
 
-ARGS=$(cat tools/output/gradle_args.txt || true)
+ARGS=$(cat "tools/output/gradle_args.txt" || true)
 if [[ -z "${ARGS:-}" ]]; then
   info "No tests selected; exiting successfully."
   exit 0

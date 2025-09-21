@@ -20,7 +20,7 @@ warn() { log WARN "$1"; }
 # Output: JSON object mapping class names to arrays of dependency class names
 
 ROOT=${1:-.}
-OUT=${2:-tools/output/jdeps_graph.json}
+OUT=${2:-"tools/output/jdeps_graph.json"}
 mkdir -p "$(dirname "$OUT")"
 
 # Find classpath and classes directories
@@ -64,9 +64,9 @@ else
 fi
 
 if [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/process_jdeps_output.py "$TMP" "$OUT"
+  py -3 "tools/python_scripts/process_jdeps_output.py" "$TMP" "$OUT"
 else
-  $PY tools/python_scripts/process_jdeps_output.py "$TMP" "$OUT"
+  "$PY" "tools/python_scripts/process_jdeps_output.py" "$TMP" "$OUT"
 fi
 
 exit 0

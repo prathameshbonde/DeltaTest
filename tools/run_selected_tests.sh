@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ARGS_FILE="${1:-tools/output/gradle_args.txt}"
+ARGS_FILE="${1:-"tools/output/gradle_args.txt"}"
 GRADLE_TASK="${2:-test}"
 GRADLE_CMD="${GRADLE_CMD:-./gradlew}"
 CHUNK_SIZE="${CHUNK_SIZE:-150}"

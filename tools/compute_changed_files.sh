@@ -20,7 +20,7 @@ warn() { log WARN "$1"; }
 
 BASE_REF=${1:-origin/main}
 HEAD_REF=${2:-HEAD}
-OUT=${3:-tools/output/changed_files.json}
+OUT=${3:-"tools/output/changed_files.json"}
 PROJECT_ROOT=${4:-}
 
 # Resolve Python executable (Windows-friendly)
@@ -97,9 +97,9 @@ log INFO "Computing git diff between $BASE_REF and $HEAD_REF${PROJECT_ROOT:+ in 
 
 # Run Python script to process the diff output and enrich with Java metadata
 if [[ "$PY" == "py -3" ]]; then
-  py -3 tools/python_scripts/process_changed_files.py "$TMP" "$OUT"
+  py -3 "tools/python_scripts/process_changed_files.py" "$TMP" "$OUT"
 else
-  $PY tools/python_scripts/process_changed_files.py "$TMP" "$OUT"
+  "$PY" "tools/python_scripts/process_changed_files.py" "$TMP" "$OUT"
 fi
 
 exit 0
