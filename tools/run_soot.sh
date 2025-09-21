@@ -61,14 +61,52 @@ else
   # Set classpath to the class root (…/build/classes/(java|kotlin)/(main|test))
   class_root=$(echo "$cf" | sed -E 's#(.*build/classes/(java|kotlin)/(main|test))/.*#\1#')
   # Dump bytecode and parse invokes
-  "$JAVAP" -classpath "$class_root" -c "$fqcn" 2>/dev/null | awk -v caller_class="$fqcn" '
-    BEGIN { cur_method=""; in_code=0 }
+  "$JAVAP" -classpath "$class_root" -c -private "$fqcn" 2>/dev/null | awk -v caller_class="$fqcn" '
+    BEGIN { 
+      cur_method=""; 
+      in_code=0;
+    }
     # Capture method headers to know which method body we are in
-    /^[ \t]*(public|private|protected|static|final|synchronized|native|abstract)/ && /\(/ && /\);$/ {
+    # Enhanced pattern to handle nested test classes and various method signatures
+    # Pattern 1: Methods with explicit access modifiers
+    /^[ \t]*(public|private|protected|static|final|synchronized|native|abstract).*\(.*\)/ && (/;$/ || /\{$/ || / throws /) {
       line=$0
-      # Extract token immediately before the first '\(' as method name
-      if (match(line, /([A-Za-z0-9_$<>]+)\(/, m)) {
-        cur_method=m[1]
+      # Extract method name - handle various patterns including test methods
+      # First try: standard method pattern
+      if (match(line, /([A-Za-z0-9_$<>]+)\s*\(/, m)) {
+        candidate=m[1]
+        # Skip keywords that might be captured
+        if (candidate !~ /^(public|private|protected|static|final|synchronized|native|abstract|void|int|long|short|byte|char|float|double|boolean|String|Object|class|interface|enum)$/) {
+          cur_method=candidate
+          if (cur_method=="<init>" || cur_method=="<clinit>") cur_method=""
+        }
+      }
+      # Second try: for test methods and complex signatures
+      if (cur_method == "" && match(line, /\s([a-zA-Z_][a-zA-Z0-9_$]*)\s*\(/, m)) {
+        candidate=m[1]
+        if (candidate !~ /^(public|private|protected|static|final|synchronized|native|abstract|void|int|long|short|byte|char|float|double|boolean|String|Object|class|interface|enum)$/) {
+          cur_method=candidate
+        }
+      }
+      next
+    }
+    # Pattern 2: Methods without explicit access modifiers (package-private, common in nested test classes)
+    /^[ \t]+(void|int|long|short|byte|char|float|double|boolean|String|[A-Z][a-zA-Z0-9_$]*)\s+[a-zA-Z_][a-zA-Z0-9_$]*\s*\(.*\)/ && (/;$/ || /\{$/ || / throws /) {
+      line=$0
+      # Extract method name for package-private methods
+      if (match(line, /^[ \t]+(void|int|long|short|byte|char|float|double|boolean|String|[A-Z][a-zA-Z0-9_$]*)\s+([a-zA-Z_][a-zA-Z0-9_$]*)\s*\(/, m)) {
+        cur_method=m[2]
+        if (cur_method=="<init>" || cur_method=="<clinit>") cur_method=""
+      }
+      next
+    }
+    # Pattern 3: Lambda synthetic methods (e.g., lambda$testMethod$0, lambda$testMethod$1)
+    /lambda\$[a-zA-Z_][a-zA-Z0-9_$]*\$[0-9]+/ {
+      line=$0
+      # Extract the original method name from lambda synthetic method
+      if (match(line, /lambda\$([a-zA-Z_][a-zA-Z0-9_$]*)\$[0-9]+/, m)) {
+        # Map lambda back to the original test method - use the ORIGINAL method name
+        cur_method=m[1]  # Use the original test method name directly
         if (cur_method=="<init>" || cur_method=="<clinit>") cur_method=""
       }
       next
@@ -96,10 +134,23 @@ else
           } else {
             next
           }
-          gsub("[():;VZBCSIJFD]", "", method)
-          if (method != "<init>" && method != "<clinit>") {
+          # Clean method name more carefully to preserve test method names
+          gsub("[():;VZBCSIJFD\\[\\]]", "", method)
+          # Also remove any remaining type descriptors but preserve method names
+          gsub(/^L.*\//, "", method)
+          
+          if (method != "<init>" && method != "<clinit>" && method != "") {
             cm = (cur_method=="" ? "?" : cur_method)
-            print caller_class"#"cm" -> "tgt"#"method
+            
+            # If this is a lambda method call, attribute it to the original method
+            if (match(cm, /^lambda_(.*)$/, lambda_match)) {
+              cm = lambda_match[1]  # Use the original method name
+            }
+            
+            # For nested classes, ensure we preserve the full class name with $
+            caller_display = caller_class
+            target_display = tgt
+            print caller_display"#"cm" -> "target_display"#"method
           }
           break
         }

@@ -345,11 +345,19 @@ def _calculate_confidence(changed_files: List[Dict[str, Any]],
     coverage_factor = min(1.0, 0.7 if total_callers > 0 else 0.3)
     
     # Factor 2: Change size (smaller changes = higher confidence)
-    num_changed_lines = sum(
-        (h['end'] - h['start'] + 1) 
-        for cf in changed_files 
-        for h in cf.get('hunks', [])
-    ) or 1
+    num_changed_lines = 0
+    for cf in changed_files:
+        for h in cf.get('hunks', []):
+            if 'end' in h and 'start' in h:
+                num_changed_lines += h['end'] - h['start'] + 1
+            elif 'new_lines' in h:
+                num_changed_lines += h['new_lines']
+            elif 'old_lines' in h:
+                num_changed_lines += h['old_lines']
+            else:
+                num_changed_lines += 1  # Default to 1 line per hunk
+    
+    num_changed_lines = max(num_changed_lines, 1)  # Ensure at least 1
     size_factor = max(0.3, min(1.0, 50.0 / num_changed_lines))
     
     # Factor 3: Test selection count (moderate count = higher confidence)
@@ -377,3 +385,134 @@ def _calculate_confidence(changed_files: List[Dict[str, Any]],
         confidence = max(confidence, 0.5)
     
     return round(min(1.0, confidence), 2)
+
+
+def select_tests_hybrid(changed_files: List[Dict[str, Any]],
+                       call_graph: List[Dict[str, str]],
+                       jdeps_graph: Dict[str, List[str]],
+                       allowed_tests: List[str] = None,
+                       max_tests: int = 500,
+                       llm_adapter = None) -> Tuple[List[str], Dict[str,str], float, Dict[str, Any]]:
+    """
+    Hybrid test selection that combines deterministic and LLM-based approaches.
+    
+    This function runs both the deterministic graph-based selector and an LLM adapter,
+    then returns the union of their results. This provides better coverage by combining
+    the reliability of deterministic analysis with the contextual understanding of LLMs.
+    
+    Args:
+        changed_files: List of changed file objects with metadata
+        call_graph: Method-level call relationships
+        jdeps_graph: Class-level dependency relationships
+        allowed_tests: List of allowed test identifiers (for filtering)
+        max_tests: Maximum number of tests to select
+        llm_adapter: LLM adapter instance for additional selection (optional)
+        
+    Returns:
+        Tuple of (selected_tests, explanations, confidence, metadata) where:
+        - selected_tests: List of test identifiers from union of both approaches
+        - explanations: Combined explanations from both selectors
+        - confidence: Weighted confidence score considering both approaches
+        - metadata: Combined metadata from both selection methods
+    """
+    logger.debug(
+        "select_tests_hybrid: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, max_tests=%d",
+        len(changed_files), len(call_graph), len(jdeps_graph), max_tests,
+    )
+    
+    # Run deterministic selector
+    det_tests, det_explanations, det_confidence, det_metadata = select_tests(
+        changed_files, call_graph, jdeps_graph, allowed_tests, max_tests
+    )
+    
+    logger.debug("Deterministic selector: %d tests, confidence=%.2f", len(det_tests), det_confidence)
+    
+    # Run LLM selector if adapter is provided
+    llm_tests = []
+    llm_explanations = {}
+    llm_confidence = 0.0
+    llm_metadata = {}
+    
+    if llm_adapter:
+        try:
+            # Prepare payload for LLM adapter
+            payload = {
+                'changed_files': changed_files,
+                'call_graph': call_graph,
+                'jdeps_graph': jdeps_graph,
+                'allowed_tests': allowed_tests or [],
+                'settings': {'max_tests': max_tests}
+            }
+            
+            llm_tests, llm_explanations, llm_confidence, llm_metadata = llm_adapter.select(payload)
+            logger.debug("LLM selector: %d tests, confidence=%.2f", len(llm_tests), llm_confidence)
+            
+        except Exception as e:
+            logger.warning("LLM selector failed, using deterministic only: %s", str(e))
+    
+    # Create union of selected tests
+    det_tests_set = set(det_tests)
+    llm_tests_set = set(llm_tests)
+    union_tests = list(det_tests_set.union(llm_tests_set))
+    
+    # Apply max_tests limit to the union
+    if len(union_tests) > max_tests:
+        # Prioritize deterministic tests, then add LLM tests up to limit
+        prioritized_tests = det_tests + [t for t in llm_tests if t not in det_tests_set]
+        union_tests = prioritized_tests[:max_tests]
+    
+    # Combine explanations
+    combined_explanations = {}
+    combined_explanations.update(det_explanations)
+    
+    for test, explanation in llm_explanations.items():
+        if test in combined_explanations:
+            # Combine explanations for tests found by both selectors
+            combined_explanations[test] = f"Deterministic: {combined_explanations[test]}; LLM: {explanation}"
+        else:
+            # Add LLM-only explanations
+            combined_explanations[test] = f"LLM: {explanation}"
+    
+    # Calculate hybrid confidence
+    # Higher confidence when both selectors agree, moderate when they complement each other
+    overlap_ratio = len(det_tests_set.intersection(llm_tests_set)) / max(len(union_tests), 1)
+    base_confidence = max(det_confidence, llm_confidence)
+    
+    if llm_adapter:
+        # Boost confidence when selectors agree, maintain when they complement
+        agreement_bonus = overlap_ratio * 0.2
+        hybrid_confidence = min(1.0, base_confidence + agreement_bonus)
+    else:
+        # No LLM adapter, use deterministic confidence
+        hybrid_confidence = det_confidence
+    
+    # Combine metadata
+    hybrid_metadata = {
+        'selection_method': 'hybrid_deterministic_llm',
+        'deterministic': {
+            'tests_count': len(det_tests),
+            'confidence': det_confidence,
+            'metadata': det_metadata
+        },
+        'llm': {
+            'tests_count': len(llm_tests),
+            'confidence': llm_confidence,
+            'metadata': llm_metadata
+        },
+        'union': {
+            'total_tests': len(union_tests),
+            'overlap_count': len(det_tests_set.intersection(llm_tests_set)),
+            'overlap_ratio': overlap_ratio,
+            'deterministic_only': len(det_tests_set - llm_tests_set),
+            'llm_only': len(llm_tests_set - det_tests_set)
+        },
+        'changed_files_paths': [cf.get('path', '') for cf in changed_files]
+    }
+    
+    logger.info(
+        "select_tests_hybrid: det=%d, llm=%d, union=%d, overlap=%d, confidence=%.2f",
+        len(det_tests), len(llm_tests), len(union_tests), 
+        len(det_tests_set.intersection(llm_tests_set)), hybrid_confidence
+    )
+    
+    return union_tests, combined_explanations, hybrid_confidence, hybrid_metadata

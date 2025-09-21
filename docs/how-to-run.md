@@ -49,7 +49,15 @@ bash tools/run_selector.sh --project-root /path/to/your/gradle/project
 
 Environment variables:
 - **SELECTOR_URL**: http://localhost:8000/select-tests (default)
-- **LLM_MODE**: mock (default), remote/openai/openai-compatible, or gemini/google
+- **LLM_MODE**: 
+  - `mock` (default): deterministic graph-based selection only
+  - `hybrid`: combination of deterministic and LLM selection (union of results)
+  - `remote`/`openai`/`openai-compatible`: OpenAI-compatible APIs only
+  - `gemini`/`google`: Google Gemini APIs only
+- **HYBRID_LLM_BACKEND**: For hybrid mode, specifies which LLM to combine with deterministic selection:
+  - `mock` (default): uses MockLLM for testing
+  - `openai`/`openai-compatible`: uses OpenAI-compatible API
+  - `gemini`/`google`: uses Google Gemini API
 - **LLM_API_KEY**: API key for external LLM providers
 - **LLM_ENDPOINT**: Custom endpoint for OpenAI-compatible APIs
 - **LLM_MODEL**: Model name (e.g., gpt-4o-mini)
@@ -57,5 +65,23 @@ Environment variables:
 - **GEMINI_MODEL**: Gemini model name (default: gemini-1.5-pro)
 - **CONFIDENCE_THRESHOLD**: 0.6 (default)
 - **EXTRA_GRADLE_ARGS**: "--info" or other Gradle options
+
+## Hybrid Mode
+
+The new `hybrid` mode combines the reliability of deterministic graph-based analysis with the contextual understanding of LLM providers. When enabled:
+
+1. **Deterministic Selector**: Analyzes call graphs and dependencies to find tests that transitively call changed methods
+2. **LLM Selector**: Uses the configured LLM backend to identify additional tests based on semantic understanding
+3. **Union**: Returns the combined set of tests from both approaches, providing better coverage
+
+Example hybrid mode configuration:
+```bash
+export LLM_MODE=hybrid
+export HYBRID_LLM_BACKEND=mock  # or openai, gemini
+# If using real LLM backends, also set their respective API keys
+export LLM_API_KEY=your_api_key_here
+```
+
+The hybrid approach typically provides higher confidence scores when both selectors agree on tests, and comprehensive coverage when they complement each other.
 
 CI examples are in the README.md and Jenkinsfile.

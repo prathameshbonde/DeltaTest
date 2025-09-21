@@ -2,15 +2,22 @@
 FastAPI service for selective test selection in Java Gradle monorepos.
 
 This service analyzes changed files, dependency graphs, and call graphs to determine
-which tests should be run for a given PR or code change. It supports multiple LLM
-providers and includes a deterministic mock mode for testing.
+which tests should be run for a given PR or code change. It supports multiple selection
+modes including deterministic graph-based analysis, LLM-powered selection, and a hybrid
+approach that combines both for optimal coverage and reliability.
+
+Supported modes:
+- mock: Deterministic graph-based selection only
+- hybrid: Combination of deterministic and LLM selection (union of results)  
+- openai/remote: OpenAI-compatible LLM APIs only
+- gemini/google: Google Gemini APIs only
 """
 import os
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from .schemas import SelectRequest, SelectResponse
-from .selector import select_tests
+from .selector import select_tests, select_tests_hybrid
 from .model_adapter import (
     ExternalLLMAdapter,
     GeminiAdapter
@@ -36,8 +43,10 @@ async def select_tests_endpoint(req: SelectRequest):
     Main endpoint for test selection.
     
     Analyzes changed files, dependency graphs, and call graphs to determine
-    which tests should be executed. Supports multiple LLM modes including
-    mock (deterministic), OpenAI-compatible APIs, and Google Gemini.
+    which tests should be executed. Supports multiple LLM modes including:
+    - mock: deterministic graph-based selection only
+    - hybrid: combination of deterministic and LLM selection (union)
+    - OpenAI-compatible APIs, and Google Gemini for LLM-only selection
     
     Args:
         req: SelectRequest containing changed files, graphs, and settings
@@ -64,6 +73,32 @@ async def select_tests_endpoint(req: SelectRequest):
                 jdeps_graph=req.jdeps_graph,
                 allowed_tests=req.allowed_tests,
                 max_tests=req.settings.max_tests,
+            )
+        elif mode == 'hybrid':
+            # Use hybrid approach: deterministic + configured LLM adapter
+            # Check for LLM configuration and use appropriate adapter
+            llm_backend = os.environ.get('HYBRID_LLM_BACKEND', 'mock').lower()
+            
+            if llm_backend == 'mock':
+                from .model_adapter import MockLLM
+                llm_adapter = MockLLM()
+            elif llm_backend in ('openai', 'openai-compatible'):
+                llm_adapter = ExternalLLMAdapter()
+            elif llm_backend in ('gemini', 'google'):
+                llm_adapter = GeminiAdapter()
+            else:
+                logger.warning("Unknown HYBRID_LLM_BACKEND '%s', falling back to mock", llm_backend)
+                from .model_adapter import MockLLM
+                llm_adapter = MockLLM()
+            
+            logger.debug("hybrid mode: using %s LLM backend", llm_backend)
+            selected, explanations, confidence, metadata = select_tests_hybrid(
+                changed_files=[cf.dict() for cf in req.changed_files],
+                call_graph=req.call_graph,
+                jdeps_graph=req.jdeps_graph,
+                allowed_tests=req.allowed_tests,
+                max_tests=req.settings.max_tests,
+                llm_adapter=llm_adapter,
             )
         elif mode in ('remote','openai','openai-compatible'):
             # Use OpenAI-compatible API adapter
