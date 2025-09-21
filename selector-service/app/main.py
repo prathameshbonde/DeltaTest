@@ -1,3 +1,10 @@
+"""
+FastAPI service for selective test selection in Java Gradle monorepos.
+
+This service analyzes changed files, dependency graphs, and call graphs to determine
+which tests should be run for a given PR or code change. It supports multiple LLM
+providers and includes a deterministic mock mode for testing.
+"""
 import os
 import logging
 from fastapi import FastAPI, HTTPException
@@ -19,11 +26,28 @@ app = FastAPI(title="Selective Test Selector Service", version="0.1.0")
 
 @app.get("/")
 async def root():
+    """Health check endpoint."""
     return {"status": "ok", "service": "selector"}
 
 
 @app.post("/select-tests", response_model=SelectResponse)
 async def select_tests_endpoint(req: SelectRequest):
+    """
+    Main endpoint for test selection.
+    
+    Analyzes changed files, dependency graphs, and call graphs to determine
+    which tests should be executed. Supports multiple LLM modes including
+    mock (deterministic), OpenAI-compatible APIs, and Google Gemini.
+    
+    Args:
+        req: SelectRequest containing changed files, graphs, and settings
+        
+    Returns:
+        SelectResponse with selected tests, explanations, and confidence score
+        
+    Raises:
+        HTTPException: For unsupported LLM modes or processing errors
+    """
     try:
         mode = os.environ.get('LLM_MODE', 'mock').lower()
         logger.info("/select-tests request: mode=%s, changed=%d, call_edges=%d, jdeps_nodes=%d, max_tests=%d",
@@ -33,7 +57,7 @@ async def select_tests_endpoint(req: SelectRequest):
                     len(req.jdeps_graph),
                     req.settings.max_tests)
         if mode == 'mock':
-            # Use our deterministic selector; mock LLM used only as fallback example
+            # Use our deterministic selector; mock LLM provides empty selection by design
             selected, explanations, confidence, metadata = select_tests(
                 changed_files=[cf.dict() for cf in req.changed_files],
                 call_graph=req.call_graph,
@@ -41,10 +65,12 @@ async def select_tests_endpoint(req: SelectRequest):
                 max_tests=req.settings.max_tests,
             )
         elif mode in ('remote','openai','openai-compatible'):
+            # Use OpenAI-compatible API adapter
             adapter = ExternalLLMAdapter()
             logger.debug("adapter: openai-compatible endpoint=%s model=%s", os.environ.get('LLM_ENDPOINT','(default)'), os.environ.get('LLM_MODEL','gpt-4o-mini'))
             selected, explanations, confidence, metadata = adapter.select(req.dict())
         elif mode in ('gemini','google'):
+            # Use Google Gemini API adapter
             adapter = GeminiAdapter()
             logger.debug("adapter: gemini model=%s", os.environ.get('GEMINI_MODEL',''))
             selected, explanations, confidence, metadata = adapter.select(req.dict())

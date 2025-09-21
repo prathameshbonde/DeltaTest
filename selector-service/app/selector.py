@@ -1,3 +1,10 @@
+"""
+Core test selection logic for analyzing code changes and computing test coverage.
+
+This module implements the deterministic selection algorithm that builds reachability
+graphs from changed files, class dependencies, and method call graphs to identify
+which tests should be executed for a given change set.
+"""
 from __future__ import annotations
 from typing import Dict, List, Tuple, Set, Any
 import logging
@@ -8,8 +15,24 @@ logger = logging.getLogger("selector.core")
 def build_reachability(changed_files: List[Dict[str, Any]],
                        call_graph: List[Dict[str, str]],
                        jdeps_graph: Dict[str, List[str]]) -> Tuple[Set[str], List[Tuple[str, str]]]:
+    """
+    Build reachability graph from changed files through dependency and call graphs.
+    
+    This function identifies which methods and classes are potentially affected by
+    the given file changes by following dependency and call relationships.
+    
+    Args:
+        changed_files: List of changed file objects with metadata
+        call_graph: Method-level call relationships (caller -> callee)
+        jdeps_graph: Class-level dependency relationships
+        
+    Returns:
+        Tuple of (reached_methods, reason_edges) where:
+        - reached_methods: Set of method signatures that may be affected
+        - reason_edges: List of (from, to) edges explaining the reachability
+    """
     # Identify changed classes/methods from file paths heuristically
-    # For demo: convert .../java/com/foo/Bar.java -> com.foo.Bar; methods unknown
+    # For Java files: convert .../java/com/foo/Bar.java -> com.foo.Bar
     changed_classes: Set[str] = set()
     for cf in changed_files:
         # Prefer already computed fully qualified class if available
@@ -81,6 +104,27 @@ def select_tests(changed_files: List[Dict[str, Any]],
                  call_graph: List[Dict[str, str]],
                  jdeps_graph: Dict[str, List[str]],
                  max_tests: int = 500) -> Tuple[List[str], Dict[str,str], float, Dict[str, Any]]:
+    """
+    Main test selection function using deterministic heuristics.
+    
+    This function implements the core selection algorithm that:
+    1. Builds reachability graphs from changes
+    2. Applies selection heuristics based on package proximity
+    3. Calculates confidence based on graph signals and change size
+    
+    Args:
+        changed_files: List of changed file objects with metadata
+        call_graph: Method-level call relationships
+        jdeps_graph: Class-level dependency relationships  
+        max_tests: Maximum number of tests to select
+        
+    Returns:
+        Tuple of (selected_tests, explanations, confidence, metadata) where:
+        - selected_tests: List of test identifiers to execute
+        - explanations: Human-readable reasons for each selection
+        - confidence: Float 0.0-1.0 indicating selection quality
+        - metadata: Additional context about the selection process
+    """
     logger.debug(
         "select_tests: inputs changed_files=%d, call_graph_edges=%d, jdeps_nodes=%d, max_tests=%d",
         len(changed_files), len(call_graph), len(jdeps_graph), max_tests,
@@ -108,8 +152,9 @@ def select_tests(changed_files: List[Dict[str, Any]],
                 pass
     logger.debug("heuristic: changed_pkgs=%s", sorted(changed_pkgs))
 
-    # Note: Without a test catalog, we cannot enumerate tests here. In practice, the LLM adapters supply tests.
-    # This function returns empty selection; confidence reflects graph signal and change size only.
+    # Note: This mock implementation returns empty selection by design.
+    # In practice, external LLM adapters or enhanced heuristics would populate the selection.
+    # The confidence reflects the quality of available graph signals.
 
     selected = selected[:max_tests]
 

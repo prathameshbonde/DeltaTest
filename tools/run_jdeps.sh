@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Logging helpers
 LOG_LEVEL=${LOG_LEVEL:-INFO}
 _ts() { date +"%Y-%m-%dT%H:%M:%S"; }
 _lvl() { echo "$1" | tr '[:lower:]' '[:upper:]'; }
@@ -8,9 +9,15 @@ log() { echo "[$(_ts)] [$(_lvl "$1")] $2"; }
 info() { log INFO "$1"; }
 warn() { log WARN "$1"; }
 
-# run_jdeps.sh
+# run_jdeps.sh - Build class-level dependency graph using JDK jdeps tool
 # Usage: run_jdeps.sh <project_root> <output_json>
-# Requires classes compiled. It scans build/classes dirs and runs jdeps to emit class dependencies JSON.
+# 
+# This script uses the JDK jdeps tool to analyze compiled Java classes and
+# extract class-level dependencies. It scans build/classes directories and
+# produces a JSON graph mapping each class to its dependencies.
+# 
+# Requires: Compiled classes from Gradle build
+# Output: JSON object mapping class names to arrays of dependency class names
 
 ROOT=${1:-.}
 OUT=${2:-tools/output/jdeps_graph.json}

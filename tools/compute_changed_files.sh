@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Logging helpers
 LOG_LEVEL=${LOG_LEVEL:-INFO}
 _ts() { date +"%Y-%m-%dT%H:%M:%S"; }
 _lvl() { echo "$1" | tr '[:lower:]' '[:upper:]'; }
@@ -8,9 +9,14 @@ log() { echo "[$(_ts)] [$(_lvl "$1")] $2"; }
 info() { log INFO "$1"; }
 warn() { log WARN "$1"; }
 
-# compute_changed_files.sh
+# compute_changed_files.sh - Analyze git diff and extract Java file metadata
 # Usage: compute_changed_files.sh <base> <head> <output_json> [project_root]
-# Outputs JSON with changed files and hunks.
+# 
+# This script:
+# 1. Computes git diff between base and head commits
+# 2. Extracts changed line hunks for each file
+# 3. For Java files, enriches with package, class, and method information
+# 4. Outputs structured JSON with all metadata for the selector service
 
 BASE_REF=${1:-origin/main}
 HEAD_REF=${2:-HEAD}

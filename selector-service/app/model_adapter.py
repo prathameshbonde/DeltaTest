@@ -1,3 +1,10 @@
+"""
+Model adapters for external LLM providers and mock selection logic.
+
+This module provides adapters for different LLM providers including OpenAI-compatible APIs,
+Google Gemini, and a mock adapter for testing. Each adapter implements the same interface
+to provide test selection, explanations, and confidence scoring.
+"""
 import os
 import json
 import re
@@ -11,10 +18,25 @@ logger = logging.getLogger("selector.adapters")
 
 
 class MockLLM:
+    """
+    Mock LLM adapter for testing and deterministic behavior.
+    
+    This adapter provides a simple implementation that returns empty selections
+    with low confidence, suitable for testing the pipeline without external dependencies.
+    """
     def __init__(self):
         pass
 
     def select(self, payload: Dict[str, Any]) -> Tuple[List[str], Dict[str, str], float, Dict[str, Any]]:
+        """
+        Mock selection that returns empty results.
+        
+        Args:
+            payload: Request payload (unused in mock mode)
+            
+        Returns:
+            Tuple of (empty_tests, empty_explanations, low_confidence, metadata)
+        """
         # Deterministic fallback lives in selector.py. The mock adapter doesn't invent tests without mapping.
         changed = payload.get('changed_files', [])
         if not changed:
@@ -26,6 +48,9 @@ class MockLLM:
 class ExternalLLMAdapter:
     """
     External LLM adapter that calls an OpenAI-compatible Chat Completions API.
+
+    This adapter supports any service that implements the OpenAI chat completions API,
+    including OpenAI itself, Azure OpenAI, and various open-source LLM serving platforms.
 
     Expected environment variables:
     - LLM_ENDPOINT: Base URL to the chat completions endpoint (default: OpenAI https://api.openai.com/v1/chat/completions)

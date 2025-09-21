@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Logging helpers
 LOG_LEVEL=${LOG_LEVEL:-INFO}
 _ts() { date +"%Y-%m-%dT%H:%M:%S"; }
 _lvl() { echo "$1" | tr '[:lower:]' '[:upper:]'; }
@@ -8,9 +9,14 @@ log() { echo "[$(_ts)] [$(_lvl "$1")] $2"; }
 info() { log INFO "$1"; }
 warn() { log WARN "$1"; }
 
-# run_soot.sh - lightweight fallback using javap -c to build a naive call graph
+# run_soot.sh - Build method-level call graph using javap bytecode analysis
 # Usage: run_soot.sh <project_root> <output_json>
-# Output: JSON array of {caller, callee}
+# 
+# This script uses javap to disassemble compiled Java classes and extract
+# method invocation patterns. It's a lightweight alternative to full Soot
+# analysis that provides sufficient call graph data for test selection.
+# 
+# Output: JSON array of {caller, callee} method relationships
 
 ROOT=${1:-.}
 OUT=${2:-tools/output/call_graph.json}

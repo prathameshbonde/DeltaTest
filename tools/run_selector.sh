@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Orchestrator script for selective test execution pipeline
+# This script coordinates change detection, dependency analysis, and test selection
+# by calling the appropriate tools and the selector service.
+
 # Logging helpers
 LOG_LEVEL=${LOG_LEVEL:-INFO}
 _ts() { date +"%Y-%m-%dT%H:%M:%S"; }
@@ -13,12 +17,20 @@ error() { log ERROR "$1"; }
 
 # run_selector.sh - Orchestrate change detection, graph building, LLM selection, and gradle test run
 # Usage: run_selector.sh --project-root <dir> --base <base> --head <head> [--dry-run]
+#
+# This script:
+# 1. Detects changed files using git diff
+# 2. Builds class dependency graph using jdeps
+# 3. Builds method call graph using javap
+# 4. Assembles JSON payload and calls selector service
+# 5. Runs selected tests with Gradle
 
 PROJECT_ROOT="."
 BASE_REF="origin/main"
 HEAD_REF="HEAD"
 DRY_RUN=0
 
+# Parse command line arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root) PROJECT_ROOT=$2; shift 2;;
@@ -32,18 +44,25 @@ done
 mkdir -p tools/output
 info "Starting selector orchestration (project_root=$PROJECT_ROOT base=$BASE_REF head=$HEAD_REF dry_run=$DRY_RUN)"
 
+# Export variables for child scripts
 export BASE_REF
 export HEAD_REF
 export PROJECT_ROOT
 
+# Step 1: Analyze changed files and extract Java metadata
 info "Computing changed files"
 bash tools/compute_changed_files.sh "$BASE_REF" "$HEAD_REF" tools/output/changed_files.json "$PROJECT_ROOT"
+
+# Step 2: Build class-level dependency graph (best-effort, may fail if no compiled classes)
 info "Building jdeps graph (best-effort)"
 bash tools/run_jdeps.sh "$PROJECT_ROOT" tools/output/jdeps_graph.json || true
+
+# Step 3: Build method-level call graph (best-effort, may fail if no compiled classes)
 info "Building call graph (best-effort)"
 bash tools/run_soot.sh "$PROJECT_ROOT" tools/output/call_graph.json || true
 
-# Resolve Python (Windows-friendly)
+# Resolve Python executable (Windows-friendly)
+# Try common Python installation patterns
 PY=""
 if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/Scripts/python.exe" ]]; then
   PY="$VIRTUAL_ENV/Scripts/python.exe"
