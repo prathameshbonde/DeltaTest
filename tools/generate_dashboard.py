@@ -316,6 +316,18 @@ def _render_html(data: Dict[str, Any]) -> str:
         f"{confidence:.3f} ({confidence_pct:.1f}% )" if confidence_pct is not None and isinstance(confidence, (int, float)) else("N/A")
     )
 
+    # Pre-escape dynamic content to avoid f-string backslash issues
+    title_html = _html_escape("DeltaTest — Selector Dashboard")
+    timestamp_html = _html_escape(_human_ts())
+    confidence_html = _html_escape(confidence_text)
+    confidence_width = confidence_pct or 0
+    metadata_html = _html_escape(metadata_json)
+    extras_html = _html_escape(extras_json) if extras else ""
+    raw_json_html = _html_escape(raw_json)
+    tests_rows_html = ''.join(test_rows) if test_rows else '<tr><td colspan="4" class="muted">No tests selected</td></tr>'
+    explanations_html = '\n'.join(expl_blocks) if expl_blocks else '<div class="muted">No explanations available</div>'
+    extras_section = f'<div style="height:8px"></div><h2>Other fields</h2><pre>{extras_html}</pre>' if extras else ''
+
     # Compose the full HTML
     html = f"""
     <!doctype html>
@@ -323,15 +335,15 @@ def _render_html(data: Dict[str, Any]) -> str:
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>DeltaTest — Selector Dashboard</title>
+      <title>{title_html}</title>
       <style>{css}</style>
     </head>
     <body>
       <div class="container">
         <div class="header">
           <div>
-            <div class="title">DeltaTest — Selector Dashboard</div>
-            <div class="subtitle">Static artifact generated on { _html_escape(_human_ts()) }</div>
+            <div class="title">{title_html}</div>
+            <div class="subtitle">Static artifact generated on {timestamp_html}</div>
           </div>
           <div class="pill"><span>JSON:</span> <a href="selector_output.json" download>selector_output.json</a></div>
         </div>
@@ -339,9 +351,9 @@ def _render_html(data: Dict[str, Any]) -> str:
         <div class="grid">
           <div class="card">
             <h3>Confidence</h3>
-            <div class="metric">{_html_escape(confidence_text)}</div>
+            <div class="metric">{confidence_html}</div>
             <div class="progress" aria-label="confidence">
-              <div class="bar" style="width: {confidence_pct or 0:.1f}%"></div>
+              <div class="bar" style="width: {confidence_width:.1f}%"></div>
             </div>
           </div>
           <div class="card">
@@ -366,7 +378,7 @@ def _render_html(data: Dict[str, Any]) -> str:
                 <tr><th>Class</th><th>Method</th><th>Package</th><th>Test Id</th></tr>
               </thead>
               <tbody id="tests-body">
-                {''.join(test_rows) if test_rows else '<tr><td colspan="4" class="muted">No tests selected</td></tr>'}
+                {tests_rows_html}
               </tbody>
             </table>
           </div>
@@ -375,23 +387,23 @@ def _render_html(data: Dict[str, Any]) -> str:
         <div class="section two-col">
           <div>
             <h2>Explanations</h2>
-            {'\n'.join(expl_blocks) if expl_blocks else '<div class="muted">No explanations available</div>'}
+            {explanations_html}
           </div>
           <div>
             <h2>Metadata</h2>
-            <pre>{_html_escape(metadata_json)}</pre>
-            {('<div style="height:8px"></div><h2>Other fields</h2><pre>' + _html_escape(extras_json) + '</pre>') if extras else ''}
+            <pre>{metadata_html}</pre>
+            {extras_section}
           </div>
         </div>
 
         <div class="section">
           <details>
             <summary>View raw selector_output.json</summary>
-            <pre>{_html_escape(raw_json)}</pre>
+            <pre>{raw_json_html}</pre>
           </details>
         </div>
 
-        <div class="footer">DeltaTest • Static dashboard • Generated { _html_escape(_human_ts()) }</div>
+        <div class="footer">DeltaTest • Static dashboard • Generated {timestamp_html}</div>
       </div>
       <script>{js}</script>
     </body>
