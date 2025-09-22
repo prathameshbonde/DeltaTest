@@ -1,0 +1,110 @@
+Hi team, this is team Deepfreak and this is going to be our demo recording for the hackathon
+submission. Currently we have a sample Java monorepo which we built and it consists of
+around 600 test cases that we just built. And right now we have integrated our changes so
+there are two builds.
+There is a push build which is basically a full Gradle build. And there is this selective test with
+delta test which we have built. So let me just trigger a dummy change so that will trigger both
+the pipelines on GitHub actions.
+And while those are running, I'll walk you through the actual code that we have built. So I've
+pushed, so if you just refresh a couple of times, yeah, you see the PRs, the workflows have
+started to trigger. So meanwhile, I'll take you guys through the code.
+So this is our main code which consists of the logic that we have integrated and which can be
+integrated actually in any pipelines. The reason being that our main core flow is handled by
+shell scripts. The shell scripts orchestrates the whole flow.
+And it is supported by different Python scripts and our main selector service, which is the
+interface for the MLM. So our main flow starts with the run selector in the GitHub actions. We
+call this run selector with appropriate arguments like the project root, the base and the head,
+which can get from the GitHub PR.
+And with these inputs, it will orchestrate what step is the computing changed file. So this
+change file script is called. And what this change file script will do is basically create the git diff
+and create a format which we have accepted on and saves it as an artifact and change file.json.
+All these inside the output folders.
+So after this is created, so this was this PR had a single line change in user service Java and the
+method that the change touched that was authenticated. So this is also something that we have
+extracted from the GitHub. After that, after computing change files, we have two scripts.
+One is to run JDIPS, which creates a class level dependency graph. So it creates a JSON file
+again, which each class is importing which classes. So this session management services,
+importing users, integer, etc.
+All basically class. So static analysis. And after this file is created again, as I said, it showed in as
+an artifact.
+And then we call run suit. So this is the bytecode static analysis of the compiled classes, which is
+done on both the Java source class and the test classes. So it outputs something like this, a call
+graph, which will show you which service and which method called exactly which services,
+which method.
+So if you see our user service authenticate user method called the login request, get email on
+user name class. So this is the graph that our static analysis creates. So caller and callee.
+So with these three call graphs, change files and JDIPS graphs created, some run selector will
+create an input for MLM. It basically has, again, these are all three same things, exactly the
+same things, along with an allowed test. So we want to pass to the MLM an allowed list of test
+classes, test methods to be exact, which can be run.
+So that it does not hallucinate and give you any random test names to be run. So these are all
+the extracted test cases from the code. And the MLM is instructed to return from this.
+And once all this input is created, our run selector orchestrator will go ahead and call our
+selector service app, which is basically a Python service. In this Python service, we have
+implemented two things. So there is this hybrid mode where we use a deterministic approach
+and an LLM adapter to get the selected test classes.
+So what the deterministic way is to build this call graph into a graph structure. And then based
+on which methods were touched in the change files, it will traverse the graph and check
+because of that, who are the children of those particular touched methods. And in those
+children, which test classes are involved.
+And those test classes are returned as a deterministic result of the test cases to be run. Apart
+from that, we also call the LLM model with the input for LLM data that we created. So there are
+multiple adapters for it.
+And in Wells Fargo, we have the Python client adapter, which you can create it to call this. So
+the main thing in LLM is basically just the prompt. So this whole prompt is going to drive how
+it's going to respond.
+Because the input, as I've shown you, is just a JSON. This is what we are going and the prompt
+that we have set. This looks like something like this.
+And what we are expecting from the LLM is basically a response of this type. What are the
+selected tests? Explanation, confidence and metadata. So metadata is anything that it deems
+relevant.
+So after all this is done, the output looks something like this for a particular given changed file
+input set that we calculated. So it gives its selected test cases. And it has these results.
+So two of these were determined by the deterministic method, by the graph evaluation. And
+four of these were given by LLM. And actually, if you check the metadata, you would see that
+LLM actually gave all six.
+And deterministically gave two. And when you do the union, we have actually done the union
+for both these. It shows that there is an overlap of two.
+And because the deterministic way is a for sure way. So that's why we give preference and show
+that these two test cases were selected deterministically. And the other four were selected
+through the LLM response.
+And they have this whole region text with them. Now, at the GitHub pipeline flow, we have also
+created an index.html. So that will look something like this. This will be created as an artifact.
+And in the pipeline, it will be available to view. So again, that's just the UI view for the JSON that
+I just showed you. So there is nothing much more than that.
+If I go here. So this is a full build pipeline. If you see, what are the scripts? It just sets up
+java.gradle and it does the full build.gradle. So it's a total clean build.
+And this took around three minutes, 17 seconds around. So this just ran. So this ran for three
+minutes, six seconds.
+And when I did the double push, our PR workflow ran, which is selective test and delta test. And
+it ran in one minute, five seconds. If I go ahead and show you how it works.
+I think we'll just rerun this once again. And because there are sometimes intermittent issues
+with the LLM API key that we are using. So let's just follow this live to be honest.
+It will also give good insight. So first, we just check out our Java monorepo, which is the it can
+be any other client side. It can be any rep.
+And we also check out our delta test whole code. So this can lie somewhere on our on-prem
+repo and we can check it out to access the scripts and Python scripts. We set up Java, we set up
+Python, we set up the dependencies.
+And then we run the build command without test to get the compiled classes. So to run the
+create the graphs and all these compiled classes are necessary. So we run that without the test
+cases.
+And then our delta test selector orchestrator is triggered. So this is running right now as of
+now. Right.
+And we should be seeing some logs and artifacts for that. And let's just wait for it. So, yeah, this
+time the API did give us a full response.
+So. And based on that, it isn't running the selected test cases. So what happens is for each of
+the created test return test selected test, you generate the Gradle commands and run it using a
+custom Gradle command.
+And you can see the build is successful. And this step generated the HTML dashboard. And if
+you just download the artifacts.
+Right. I just downloaded it quickly. And we can see the UI, basically.
+So I'll open up index.html. So you can see that there are 10 selected test cases based on the
+changed file. Right. And there were two groups.
+So because it's a multi modular test, there can be two modules. Right. So I can see that all of
+them were selected by our LLM.
+Right. And our deterministic was not able to give us any test cases for this particular change.
+And this is how it will look to a user.
+And as you can see, if we check the time it took to run this particular flow, it was just one
+minute, 25 seconds, one minute, 17 seconds. So we do see a big jump in time efficiency of
+around 50 percent. Right.
+With this basic approach. And that's all for this demo for this implementation.
